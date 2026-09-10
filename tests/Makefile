@@ -26,7 +26,7 @@ local-build: ## Build Docker image locally using Docker (no Nix installation req
 		-v nix-build-cache:/nix \
 		-w /workspace/tests/nix \
 		nixos/nix:latest \
-		sh -c "nix --extra-experimental-features 'nix-command flakes' build .#dockerImage --show-trace && cp result /workspace/tests/nix/docker-image.tar.gz"
+		sh -c "nix --extra-experimental-features 'nix-command flakes' build path:.#dockerImage --no-write-lock-file --show-trace && cp result /workspace/tests/nix/docker-image.tar.gz"
 	@echo "[INFO] Loading image into Docker..."
 	@docker load < $(TESTS_DIR)nix/docker-image.tar.gz
 	@rm -f $(TESTS_DIR)nix/docker-image.tar.gz
