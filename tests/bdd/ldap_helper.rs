@@ -57,21 +57,16 @@ fn config_dn(dn: &str) -> TestResult<String> {
 
 /// Owns every subprocess, including setup commands and partially started slapd.
 /// Output goes to files, so a verbose child cannot block on a full pipe.
-struct Process(Option<Child>);
+struct Process(Child);
 
 impl Process {
     fn status(&mut self) -> std::io::Result<Option<ExitStatus>> {
-        let status = self.0.as_mut().expect("child already reaped").try_wait()?;
-        if status.is_some() {
-            self.0 = None;
-        }
-        Ok(status)
+        // Child caches a reaped status, so Drop can safely call stop again.
+        self.0.try_wait()
     }
 
     fn stop(&mut self) -> std::io::Result<()> {
-        let Some(child) = self.0.as_mut() else {
-            return Ok(());
-        };
+        let child = &mut self.0;
         if child.try_wait()?.is_none() {
             // The unreaped Child still owns this PID.
             unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
@@ -84,7 +79,6 @@ impl Process {
             }
         }
         child.wait()?;
-        self.0 = None;
         Ok(())
     }
 }
@@ -93,15 +87,14 @@ impl Drop for Process {
     fn drop(&mut self) {
         if let Err(error) = self.stop() {
             eprintln!("LDAP fixture child cleanup failed: {error}");
-            if let Some(child) = self.0.as_mut() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
         }
     }
 }
 
 struct CommandOutcome {
+    program: String,
     status: ExitStatus,
     // Assertions need the unmodified protocol output, even if a password
     // happens to match part of a DN or a result description.
@@ -113,6 +106,7 @@ struct CommandOutcome {
 impl std::fmt::Debug for CommandOutcome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommandOutcome")
+            .field("program", &self.program)
             .field("status", &self.status)
             .field("output", &self.diagnostics)
             .finish()
@@ -123,6 +117,16 @@ impl CommandOutcome {
     fn expect_code(&self, code: i32) -> TestResult<()> {
         if self.status.code() != Some(code) {
             return Err(format!("LDAP fixture command: expected exit {code}, got {self:?}").into());
+        }
+        Ok(())
+    }
+
+    fn expect_identity(&self, dn: &str) -> TestResult<()> {
+        self.expect_code(0)?;
+        if self.stdout.trim() != format!("dn:{dn}") {
+            return Err(
+                format!("LDAP bind did not establish the requested identity: {self:?}").into(),
+            );
         }
         Ok(())
     }
@@ -140,22 +144,26 @@ async fn run_command(
     deadline: Instant,
     redact: &[&str],
 ) -> TestResult<CommandOutcome> {
+    let program = command.get_program().to_string_lossy().into_owned();
     let stdout = NamedTempFile::new()?;
     let stderr = NamedTempFile::new()?;
-    let mut process = Process(Some(
+    let mut process = Process(
         command
             .stdin(Stdio::null())
             .stdout(stdout.reopen()?)
             .stderr(stderr.reopen()?)
-            .spawn()?,
-    ));
+            .spawn()
+            .map_err(|error| format!("LDAP fixture {program}: could not spawn process: {error}"))?,
+    );
     let status = loop {
         if let Some(status) = process.status()? {
             break status;
         }
         if Instant::now() >= deadline {
             process.stop()?;
-            return Err("LDAP fixture command exceeded its deadline (child reaped)".into());
+            return Err(
+                format!("LDAP fixture {program} exceeded its deadline (child reaped)").into(),
+            );
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
@@ -163,6 +171,7 @@ async fn run_command(
     let stderr = fs::read_to_string(stderr.path())?;
     let diagnostics = redact_text(format!("stdout:\n{stdout}\nstderr:\n{stderr}"), redact);
     Ok(CommandOutcome {
+        program,
         status,
         stdout,
         stderr,
@@ -279,6 +288,11 @@ impl Transport {
     }
 }
 
+enum SearchScope {
+    Base,
+    Subtree,
+}
+
 /// Drop order keeps config, MDB and certificates alive until slapd is reaped.
 pub struct LdapServer {
     process: Option<Process>,
@@ -290,15 +304,14 @@ pub struct LdapServer {
 }
 
 impl LdapServer {
-    async fn start(fixture: FixtureSpec, first_ldaps_port: Option<u16>) -> TestResult<Self> {
+    /// Build the initial directory before reserving ports or starting slapd.
+    async fn prepare(fixture: FixtureSpec) -> TestResult<Self> {
         let admin_dn = format!("cn=admin,{}", fixture.base_dn);
         let config_base_dn = config_dn(&fixture.base_dn)?;
         let config_admin_dn = config_dn(&admin_dn)?;
         if fixture.ldif.trim().is_empty() {
             return Err("LDAP startup LDIF docstring is empty; include the base DN entry".into());
         }
-        let slapd = std::env::var_os("LDAP_SLAPD_BIN")
-            .ok_or("LDAP_SLAPD_BIN missing; use the Nix LDAP test environment")?;
         let schema = std::env::var_os("LDAP_SCHEMA_DIR")
             .ok_or("LDAP_SCHEMA_DIR missing; use the Nix LDAP test environment")?;
         let directory = tempfile::Builder::new().prefix("bdd-ldap-").tempdir()?;
@@ -356,6 +369,14 @@ impl LdapServer {
             .into());
         }
         server.admin_dn = server.pretty_dn(&server.admin_dn).await?;
+        Ok(server)
+    }
+
+    async fn start(fixture: FixtureSpec, first_ldaps_port: Option<u16>) -> TestResult<Self> {
+        let slapd = std::env::var_os("LDAP_SLAPD_BIN")
+            .ok_or("LDAP_SLAPD_BIN missing; use the Nix LDAP test environment")?;
+        let mut server = Self::prepare(fixture).await?;
+        let dir = server.directory.path().to_path_buf();
 
         // Reserve both ports together; retry only a diagnosed bind collision
         // in the small interval between releasing reservations and slapd bind.
@@ -416,7 +437,7 @@ impl LdapServer {
                 });
             }
             drop((ldap, ldaps));
-            server.process = Some(Process(Some(command.spawn()?)));
+            server.process = Some(Process(command.spawn()?));
             match server.wait_ready(deadline).await {
                 Ok(()) => return Ok(server),
                 Err(error) => {
@@ -526,6 +547,40 @@ impl LdapServer {
         .await
     }
 
+    /// Search for entry DNs as this directory's technical administrator.
+    async fn search(
+        &self,
+        transport: Transport,
+        base: &str,
+        scope: SearchScope,
+        filter: &str,
+        deadline: Instant,
+    ) -> TestResult<CommandOutcome> {
+        validate_dn(base)?;
+        self.command(
+            "ldapsearch",
+            transport,
+            (&self.admin_dn, ADMIN_PASSWORD),
+            false,
+            &[
+                "-LLL",
+                "-o",
+                "ldif_wrap=no",
+                "-b",
+                base,
+                "-s",
+                match scope {
+                    SearchScope::Base => "base",
+                    SearchScope::Subtree => "sub",
+                },
+                filter,
+                "dn",
+            ],
+            deadline,
+        )
+        .await
+    }
+
     async fn wait_ready(&mut self, deadline: Instant) -> TestResult<()> {
         loop {
             if let Some(status) = self.process.as_mut().unwrap().status()? {
@@ -536,22 +591,11 @@ impl LdapServer {
             }
             let probe_deadline = deadline.min(Instant::now() + COMMAND_TIMEOUT);
             let result = self
-                .command(
-                    "ldapsearch",
+                .search(
                     Transport::Ldap,
-                    (&self.admin_dn, ADMIN_PASSWORD),
-                    false,
-                    &[
-                        "-LLL",
-                        "-o",
-                        "ldif_wrap=no",
-                        "-b",
-                        &self.fixture.base_dn,
-                        "-s",
-                        "base",
-                        "(objectClass=*)",
-                        "dn",
-                    ],
+                    &self.fixture.base_dn,
+                    SearchScope::Base,
+                    "(objectClass=*)",
                     probe_deadline,
                 )
                 .await?;
@@ -572,12 +616,7 @@ impl LdapServer {
                         deadline,
                     )
                     .await?;
-                tls.expect_code(0)?;
-                if tls.stdout.trim() != format!("dn:{}", self.admin_dn) {
-                    return Err(
-                        "LDAPS readiness did not establish the fixture admin identity".into(),
-                    );
-                }
+                tls.expect_identity(&self.admin_dn)?;
                 return Ok(());
             }
             // -1 maps to 255 in the CLI. Other results (including 49) are
@@ -720,7 +759,7 @@ async fn restart_server(world: &mut DoormanWorld, name: String) {
 }
 
 #[then(expr = "LDAP server {string} accepts bind over {string} as {string} with password {string}")]
-async fn accepts_bind_with_password(
+async fn accepts_bind(
     world: &mut DoormanWorld,
     name: String,
     transport: String,
@@ -733,7 +772,7 @@ async fn accepts_bind_with_password(
 #[then(
     expr = "LDAP server {string} rejects bind over {string} as {string} with password {string} with result 49"
 )]
-async fn rejects_bind_with_password(
+async fn rejects_bind(
     world: &mut DoormanWorld,
     name: String,
     transport: String,
@@ -763,14 +802,11 @@ async fn check_bind(
         )
         .await
         .expect("LDAP bind command");
-    result.expect_code(expected_code).unwrap();
     if expected_code == 0 {
         let expected_dn = server(world, &name).pretty_dn(&dn).await.unwrap();
-        assert!(
-            result.stdout.trim() == format!("dn:{expected_dn}"),
-            "bind must establish the requested identity: {result:?}"
-        );
+        result.expect_identity(&expected_dn).unwrap();
     } else {
+        result.expect_code(expected_code).unwrap();
         assert!(
             result.stderr.contains("Invalid credentials (49)"),
             "expected LDAP invalidCredentials: {result:?}"
@@ -816,7 +852,7 @@ async fn rejects_ca(world: &mut DoormanWorld, name: String, transport: String) {
                 "expected certificate trust failure, not a TCP/auth failure: {result:?}"
             );
         } else {
-            result.expect_code(0).unwrap();
+            result.expect_identity(&server.admin_dn).unwrap();
         }
     }
 }
@@ -835,27 +871,14 @@ async fn search_dn(
     let base = world.replace_placeholders(&base);
     let filter = world.replace_placeholders(&filter);
     let dn = world.replace_placeholders(&dn);
-    validate_dn(&base).unwrap();
-    validate_dn(&dn).unwrap();
     let server = server(world, &name);
     let dn = server.pretty_dn(&dn).await.unwrap();
     let result = server
-        .command(
-            "ldapsearch",
+        .search(
             Transport::parse(&world.replace_placeholders(&transport)).unwrap(),
-            (&server.admin_dn, ADMIN_PASSWORD),
-            false,
-            &[
-                "-LLL",
-                "-o",
-                "ldif_wrap=no",
-                "-b",
-                &base,
-                "-s",
-                "sub",
-                &filter,
-                "dn",
-            ],
+            &base,
+            SearchScope::Subtree,
+            &filter,
             Instant::now() + COMMAND_TIMEOUT,
         )
         .await
@@ -873,18 +896,9 @@ async fn search_dn(
 }
 
 #[when(expr = "LDAP server {string} password for {string} becomes {string}")]
-async fn change_literal_password(
-    world: &mut DoormanWorld,
-    name: String,
-    dn: String,
-    password: String,
-) {
-    replace_password(world, name, dn, &password).await;
-}
-
-async fn replace_password(world: &mut DoormanWorld, name: String, dn: String, password: &str) {
+async fn change_password(world: &mut DoormanWorld, name: String, dn: String, password: String) {
     let dn = world.replace_placeholders(&dn);
-    let password = world.replace_placeholders(password);
+    let password = world.replace_placeholders(&password);
     validate_dn(&dn).unwrap();
     let server = server(world, &name);
     // Store only a hash in the change LDIF. The CLI receives credentials in
