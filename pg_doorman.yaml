@@ -284,9 +284,16 @@ general:
   # Default: false
   sync_server_parameters: false
 
-  # Default full reset SQL; pools may override. Unset keeps selective cleanup.
-  # Default: None (selective cleanup)
-  # server_reset_query: "DISCARD ALL"
+  # Cleanup mode: off, adaptive (default), or always. Legacy false/true mean off/adaptive.
+  # Pools inherit this mode unless overridden. Mode and query inherit independently.
+  # Adaptive skips clean backends; always runs cleanup_server_query after each use.
+  # Open transactions are rolled back even in off mode.
+  # Default: "adaptive"
+  cleanup_server_connections: "adaptive"
+
+  # Optional cleanup SQL; pools may override. Used when the effective mode requests cleanup.
+  # Default: None (built-in adaptive cleanup)
+  # cleanup_server_query: "DISCARD ALL"
 
   # DataRow messages larger than this threshold are streamed to the client in small chunks
   # instead of being buffered entirely in memory. Prevents memory spikes on large rows.
@@ -609,17 +616,20 @@ pools:
     # Override global server_lifetime for this pool (in milliseconds).
     # server_lifetime: 300000
 
-    # Reset session state (SET, prepared statements, cursors) when returning a connection to pool.
-    # ROLLBACK for open transactions is always executed regardless of this setting.
-    # Prevents state leaking between clients in transaction mode.
-    # Default: true
-    cleanup_server_connections: true
-
-    # Full reset SQL before backend reuse; unset inherits general.server_reset_query.
-    # Must clear session state, prepared statements and cursors; requires cleanup_server_connections.
-    # Failed resets close the backend. Client SQL is not rewritten.
+    # Override general.cleanup_server_connections: off, adaptive, or always (false/true = off/adaptive).
+    # Adaptive: plain SELECT adds no reset; SET triggers RESET ROLE; RESET ALL when no custom query is set.
+    # Pending Parses, deferred Closes, prepared-cache errors and cursors can also require cleanup.
+    # Ordinary prepared-cache reuse is retained; SQL PREPARE, temp tables, LISTEN and function side effects are not universally tracked.
+    # Always requires cleanup_server_query and adds cleanup/cache-rebuild cost after every use.
+    # Open transactions are rolled back in every mode, including off.
     # Default: None (uses global setting)
-    # server_reset_query: "DISCARD ALL"
+    # cleanup_server_connections: "adaptive"
+
+    # Override general.cleanup_server_query; mode and query inherit independently.
+    # Used on tracked dirtiness in adaptive mode, after each use in always mode, never in off mode.
+    # Must restore session state and release prepared statements/cursors. Failed cleanup closes the backend.
+    # Default: None (uses global setting)
+    # cleanup_server_query: "DISCARD ALL"
 
     # Override global sync_server_parameters for this pool.
     # Default: None (uses global setting)

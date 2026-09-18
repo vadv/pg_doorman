@@ -448,6 +448,11 @@ where
             }
         }
 
+        let cleanup_result = if conn.custom_cleanup_enabled() {
+            conn.checkin_cleanup().await
+        } else {
+            Ok(())
+        };
         write_all_flush(&mut self.write, &response).await?;
 
         if !has_error_response(&response) && ends_with_idle_ready_for_query(&response) {
@@ -455,7 +460,7 @@ where
                 .set(snapshot.query.clone(), response.freeze());
         }
 
-        Ok(())
+        cleanup_result
     }
 
     /// Handle simple query (Q message).

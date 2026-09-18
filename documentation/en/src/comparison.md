@@ -73,7 +73,7 @@ See [Patroni-assisted fallback](tutorials/patroni-assisted-fallback.md), [`patro
 | `min_pool_size` (warm connections) | Yes | No | Yes |
 | Prepared statements in transaction mode | Yes (named and anonymous, two-level cache, query interner) | Yes (named, since 1.21, `max_prepared_statements`) | Yes (named, `pool_reserve_prepared_statement`) |
 | Anonymous `Parse` cache for performance | Yes (`DOORMAN_N`, reused across clients in a pool) | No (anonymous `Parse` passes through unchanged) | No (named statements required) |
-| Smart cleanup on checkin (skip `DEALLOCATE ALL` if cache untouched) | Yes (mutation-tracking `RESET ALL` / `DEALLOCATE ALL` on demand) | No (always `DISCARD ALL` if `server_reset_query` set) | Yes (auto) |
+| Smart cleanup on checkin (skip `DEALLOCATE ALL` if cache untouched) | Yes (mutation-tracking `RESET ALL` / `DEALLOCATE ALL` on demand) | Depends on pooling mode and `server_reset_query_always` | Yes (auto) |
 | LISTEN / NOTIFY pinning in transaction mode | No | No | Experimental |
 | Cross-rule connection cap (`shared_pool`) | No | No | Yes (since 1.5.1) |
 | `PAUSE` / `RESUME` / `RECONNECT` admin commands | Yes | Yes | Yes (since 1.4.1) |

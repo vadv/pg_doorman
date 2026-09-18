@@ -360,10 +360,17 @@ TCP backlog для входящих соединений. При значени�
 
 По умолчанию: `false`.
 
-### server_reset_query
+### cleanup_server_connections
 
-Общий [server_reset_query](pool.md#server_reset_query); значение пула имеет приоритет.
-По умолчанию не задан: сохраняется выборочная очистка.
+Общий режим очистки: `off`, `adaptive` (по умолчанию), `always`.
+Старые `false`/`true` принимаются как `off`/`adaptive`; генератор выводит строки.
+Пул наследует режим, если не переопределён. Явное `true` в пуле означает `adaptive`, даже если в general задан `always`.
+Режим и запрос наследуются независимо. [Условия и стоимость очистки](pool.md#cleanup_server_connections).
+
+### cleanup_server_query
+
+Общий [cleanup_server_query](pool.md#cleanup_server_query); значение пула имеет приоритет независимо от режима.
+По умолчанию не задан: режим `adaptive` использует встроенную выборочную очистку.
 
 ### sync_server_parameters
 

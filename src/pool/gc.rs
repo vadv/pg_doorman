@@ -134,7 +134,7 @@ mod tests {
             },
             "test_db",
             Arc::new(DashMap::new()),
-            false,
+            crate::config::CleanupMode::Off,
             None,
             false,
             0,

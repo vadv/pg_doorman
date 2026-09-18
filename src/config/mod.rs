@@ -54,6 +54,40 @@ pub use web::Web;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Backend cleanup policy. Legacy booleans map to adaptive/off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CleanupMode {
+    Off,
+    #[default]
+    Adaptive,
+    Always,
+}
+
+impl<'de> serde::Deserialize<'de> for CleanupMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Value {
+            Bool(bool),
+            Text(String),
+        }
+        match <Value as serde::Deserialize>::deserialize(deserializer)? {
+            Value::Bool(true) => Ok(Self::Adaptive),
+            Value::Bool(false) => Ok(Self::Off),
+            Value::Text(value) => match value.as_str() {
+                "off" => Ok(Self::Off),
+                "adaptive" => Ok(Self::Adaptive),
+                "always" => Ok(Self::Always),
+                _ => Err(serde::de::Error::unknown_variant(
+                    &value,
+                    &["off", "adaptive", "always"],
+                )),
+            },
+        }
+    }
+}
+
 /// Configuration file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
@@ -237,14 +271,14 @@ pub struct Config {
     pub include: Include,
 }
 
-fn validate_server_reset_query(query: &str) -> Result<(), Error> {
+fn validate_cleanup_server_query(query: &str) -> Result<(), Error> {
     if query
         .trim_matches(|c: char| c.is_whitespace() || c == ';')
         .is_empty()
         || query.contains('\0')
     {
         return Err(Error::BadConfig(
-            "server_reset_query must contain SQL and no NUL bytes".into(),
+            "cleanup_server_query must contain SQL and no NUL bytes".into(),
         ));
     }
     Ok(())
@@ -394,8 +428,9 @@ impl Config {
                 pool_name, pool.server_host, pool.server_port
             );
             info!(
-                "[pool: {}] Cleanup server connections: {}",
-                pool_name, pool.cleanup_server_connections
+                "[pool: {}] Cleanup server connections: {:?}",
+                pool_name,
+                pool.effective_cleanup_server_connections(&self.general)
             );
             info!(
                 "[pool: {}] Connect timeout: {}",
@@ -436,8 +471,8 @@ impl Config {
 
     /// Validate the configuration.
     pub async fn validate(&mut self) -> Result<(), Error> {
-        if let Some(query) = &self.general.server_reset_query {
-            validate_server_reset_query(query)?;
+        if let Some(query) = &self.general.cleanup_server_query {
+            validate_cleanup_server_query(query)?;
         }
         // Validate Talos
         self.talos.validate().await?;
@@ -778,14 +813,14 @@ impl Config {
             }
         }
 
-        for pool in self.pools.values_mut() {
+        for (name, pool) in &mut self.pools {
             pool.validate().await?;
-            if pool.effective_server_reset_query(&self.general).is_some()
-                && !pool.cleanup_server_connections
+            if pool.effective_cleanup_server_connections(&self.general) == CleanupMode::Always
+                && pool.effective_cleanup_server_query(&self.general).is_none()
             {
-                return Err(Error::BadConfig(
-                    "server_reset_query requires cleanup_server_connections = true".into(),
-                ));
+                return Err(Error::BadConfig(format!(
+                    "pools.{name}.cleanup_server_connections = always requires cleanup_server_query"
+                )));
             }
         }
 
