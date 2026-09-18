@@ -71,19 +71,31 @@ Useful when one user (operations tooling, migrations) needs session semantics bu
 
 ## Cleanup on checkin
 
-`cleanup_server_connections` defaults to `adaptive`. A pool inherits general settings unless it overrides them;
-mode and `cleanup_server_query` inherit independently. Legacy `true` means `adaptive`, and `false` means `off`.
-Open transactions are rolled back in every mode, including `off`.
+`cleanup_server_connections` defaults to `adaptive`. A pool inherits general settings unless it overrides them.
+Mode and `cleanup_server_query` inherit independently. Legacy `true` means `adaptive`, and `false` means `off`.
+Open transactions are rolled back separately before session cleanup in every mode, including `off`.
 
-In adaptive mode, plain `SELECT` adds no cleanup round trip. Without custom SQL, a tracked SET causes
-`RESET ROLE; RESET ALL;`; cursor state adds `CLOSE ALL`. Pending Parses, deferred eviction Closes and errors
-with a prepared cache can require `DEALLOCATE ALL`, which also clears the backend prepared cache.
-Ordinary cached-statement use keeps that cache. SQL PREPARE is not universally tracked; temporary objects,
-LISTEN and function side effects are outside this tracking. `RESET ALL` does not unlock advisory locks.
-Legacy RESET/DISCARD tags can clear tracking; configured adaptive cleanup retains SET dirtiness conservatively.
+In adaptive mode, plain `SELECT` does not require cleanup. It does not cancel an earlier cleanup requirement.
+Successful `Parse` and `Bind` operations with managed caching do not themselves require cleanup, so cached statements can be reused.
+When built-in cleanup is required, it starts with `RESET ROLE`, followed by the required commands in this order:
+`RESET ALL` for SET state, `DEALLOCATE ALL` for prepared statements, and `CLOSE ALL` for cursors.
 
-A custom query replaces selective SQL when adaptive cleanup is needed. `always` runs the effective query
-after every used backend, including plain SELECT, at the cost of a round trip and prepared-cache rebuild.
+- Buffered Parse registration left unfinished at checkin requires `DEALLOCATE ALL`.
+- An unsent Close from LRU eviction requires `DEALLOCATE ALL`.
+- A server error with the backend prepared cache requires prepared-statement cleanup before reuse. Bad backends are closed.
+
+A named Parse without managed caching requires all three cleanup categories, including in session pooling.
+CLOSE ALL cancels cursor cleanup. Closing one cursor does not.
+Backend CommandComplete tags for DEALLOCATE ALL and DISCARD ALL invalidate the backend prepared-statement LRU.
+Internal prepared-statement cleanup does not clear the pool query cache or client prepared-statement name mappings.
+SQL PREPARE, temporary objects, LISTEN and function side effects are not independently tracked. RESET ALL does not release advisory locks.
+Built-in tracking clears the SET requirement on any RESET tag, including a single-parameter RESET, so other changed parameters can be missed.
+DISCARD ALL clears the three cleanup flags. Unfinished Parse registration and unsent Closes are checked separately at checkin.
+A configured cleanup query replaces the built-in commands. In this case RESET preserves an earlier SET cleanup requirement,
+and client DISCARD ALL also requests the configured cleanup.
+
+`always` requires a configured query and runs it once per used-backend return, including after SELECT.
+It adds server work and may require statements to be prepared again.
 For PostgreSQL workloads that favor prepared-cache reuse, keep the default:
 
 ```yaml
@@ -92,9 +104,9 @@ general:
 ```
 
 Choose cleanup SQL for the session resources your application uses. `off` skips session cleanup even when a query is configured.
-RELOAD applies changed policies to new pools; existing clients keep their old pool.
+RELOAD applies changed policies to new pools. Existing clients keep their old pool.
 
-Cleanup runs on backend return: client disconnect in session mode, transaction/autocommit end in transaction mode; not within an open transaction or during Flush.
+Cleanup runs on backend return: client disconnect in session mode, transaction/autocommit end in transaction mode. It does not run within an open transaction or during Flush.
 
 ## Reference
 

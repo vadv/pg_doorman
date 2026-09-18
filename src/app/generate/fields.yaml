@@ -816,17 +816,18 @@ fields:
       config:
         en: |
           Cleanup mode: off, adaptive (default), or always. Legacy false/true mean off/adaptive.
-          Pools inherit this mode unless overridden. Mode and query inherit independently.
-          Adaptive skips clean backends; always runs cleanup_server_query after each use.
+          Adaptive runs cleanup when server responses or unfinished protocol operations require it.
+          Always runs cleanup_server_query when a used backend returns.
           Open transactions are rolled back even in off mode.
         ru: |
-          Режим очистки: off, adaptive (по умолчанию), always. Старые false/true означают off/adaptive.
-          Для очистки значения пула имеют приоритет над general; режим и SQL выбираются независимо.
-          Adaptive очищает по отмеченным изменениям; always — при каждом возврате использованного соединения.
-          Открытые транзакции откатываются даже в режиме off.
+          Режим очистки: off, adaptive или always. По умолчанию adaptive.
+          Значения false и true означают off и adaptive. Генератор выводит строковые значения.
+          Adaptive назначает очистку по ответам сервера и незавершённым операциям протокола.
+          Always выполняет cleanup_server_query при каждом возврате использованного соединения.
+          Открытая транзакция откатывается даже в режиме off.
       doc: |
         Default cleanup mode: `off`, `adaptive`, or `always`. Legacy booleans `false` and `true`
-        are accepted as `off` and `adaptive`; generated configurations use strings.
+        are accepted as `off` and `adaptive`. Generated configurations use strings.
         Pools inherit this value unless explicitly overridden. An explicit pool `true` means
         `adaptive`, even if the general mode is `always`. Query and mode inherit independently.
         See [pool cleanup policy](pool.md#cleanup_server_connections) for triggers and costs.
@@ -834,8 +835,8 @@ fields:
 
     cleanup_server_query:
       config:
-        en: "Optional cleanup SQL; pools may override. Used when the effective mode requests cleanup."
-        ru: "Необязательный SQL очистки. Выполняется по выбранному режиму."
+        en: "Optional cleanup SQL. Used when the selected mode requires cleanup."
+        ru: "SQL для очистки сессии. Если запрос не задан, adaptive использует встроенные команды очистки."
       doc: "Default [cleanup_server_query](pool.md#cleanup_server_query) for all pools. Pool values override it independently of cleanup mode. Unset retains built-in selective SQL in adaptive mode."
       default: "None (built-in adaptive cleanup)"
 
@@ -1407,23 +1408,43 @@ fields:
     cleanup_server_query:
       config:
         en: |
-          Override general.cleanup_server_query; mode and query inherit independently.
-          Used on tracked dirtiness in adaptive mode, after each use in always mode, never in off mode.
-          Must restore session state and release prepared statements/cursors. Failed cleanup closes the backend.
+          Override general.cleanup_server_query. Used when adaptive requires cleanup, on each used-backend return in always, never in off.
+          Must restore session state and release prepared statements and cursors. Failed cleanup closes the backend.
+          After successful cleanup, pg_doorman clears the backend prepared-statement LRU.
+          It forgets stored values of parameters that pg_doorman can SET but does not receive through ParameterStatus, such as search_path.
         ru: |
-          SQL очистки сессии: в adaptive — по отмеченным изменениям, в always — при возврате использованного соединения.
-          В off запрос не выполняется. Он должен сбрасывать сессию, prepared statements и курсоры.
-          При ошибке очистки серверное соединение закрывается.
+          SQL, который заменяет встроенные команды очистки в adaptive и обязателен в always. В off он не выполняется.
+          Запрос должен восстановить параметры сессии и освободить подготовленные запросы, курсоры и другие используемые ресурсы.
+          Ответы всех команд, включая строки SELECT, считываются до ReadyForQuery со статусом Idle.
+          Ошибка, таймаут или NOTICE с кодом 0A000 или 0AM01 приводят к закрытию серверного соединения.
+          После успешного выполнения запроса pg_doorman очищает LRU подготовленных запросов серверного соединения.
+          Кеш определений запросов пула и соответствия имён подготовленных запросов клиента сохраняются.
+          pg_doorman забывает сохранённые значения параметров, которые он не отслеживает через ParameterStatus и разрешает изменять через SET, например search_path.
+          Клиентские SQL-команды не переписываются.
       doc: |
-        SQL used when the cleanup mode requests it; overrides `general.cleanup_server_query`.
-        `always` requires an effective query. `adaptive` without a query keeps built-in selective SQL;
+        SQL used when the cleanup mode requires it. Overrides `general.cleanup_server_query`.
+        `always` requires a configured query. `adaptive` without one uses built-in selective commands.
         `off` ignores a valid query. Empty, whitespace/semicolon-only and NUL-containing values are rejected in every mode.
         The operator must choose SQL that restores session defaults and releases prepared statements,
-        cursors and required session resources. Multiple statements and SELECT results are drained to an idle result.
-        SQL/transport errors, unsupported-command notices, timeout (`general.connect_timeout`) or a non-idle result
-        retire the backend. Successful custom cleanup invalidates backend prepared/GUC tracking. Client SQL is not rewritten.
+        cursors and other session resources used by the application. Client SQL is not rewritten.
+        Any open transaction is rolled back first in a separate exchange. All responses, including SELECT rows,
+        are consumed until ReadyForQuery with Idle status. SQL/transport errors, cancellation, timeout (`general.connect_timeout`),
+        COPY, an empty-query response, unsupported-command notices with code `0A000` or `0AM01`, or failure to finish Idle retire the backend.
+        After successful cleanup, pg_doorman clears the backend prepared-statement LRU.
+        The pool query cache and client prepared-statement name mappings remain available.
+        It forgets stored values of session parameters that pg_doorman can SET but does not receive through ParameterStatus, such as search_path.
         PostgreSQL example: `cleanup_server_query = "DISCARD ALL"`. Greengage example:
-        `CLOSE ALL; SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS;`.
+
+        ```sql
+        CLOSE ALL;
+        SET SESSION AUTHORIZATION DEFAULT;
+        RESET ALL;
+        DEALLOCATE ALL;
+        UNLISTEN *;
+        SELECT pg_advisory_unlock_all();
+        DISCARD PLANS;
+        ```
+
         This example does not remove temporary objects or reset sequence session state.
       default: "None (uses global setting)"
 
@@ -1431,40 +1452,64 @@ fields:
       config:
         en: |
           Override general.cleanup_server_connections: off, adaptive, or always (false/true = off/adaptive).
-          Adaptive: plain SELECT adds no reset; SET triggers RESET ROLE; RESET ALL when no custom query is set.
-          Pending Parses, deferred Closes, prepared-cache errors and cursors can also require cleanup.
-          Ordinary prepared-cache reuse is retained; SQL PREPARE, temp tables, LISTEN and function side effects are not universally tracked.
-          Always requires cleanup_server_query and adds cleanup/cache-rebuild cost after every use.
-          Open transactions are rolled back in every mode, including off.
+          Successful Parse and Bind operations with managed caching do not themselves require cleanup, so cached statements can be reused.
+          Plain SELECT does not require cleanup. It does not cancel an earlier cleanup requirement.
+          When built-in cleanup is required, it starts with RESET ROLE, then conditionally RESET ALL, DEALLOCATE ALL and CLOSE ALL.
+          Unfinished buffered Parse registration at checkin requires DEALLOCATE ALL.
+          An unsent Close from LRU eviction also requires DEALLOCATE ALL.
+          A backend error with a prepared cache requires DEALLOCATE ALL before reuse. Bad backends are closed.
+          A named Parse without managed caching requires all three cleanup categories. DECLARE requires cursor cleanup until CLOSE ALL.
+          SQL PREPARE, temp objects, LISTEN and function side effects are not independently tracked.
+          Always requires cleanup_server_query on every used-backend return. Off skips session cleanup.
+          Open transactions are rolled back first in every mode.
         ru: |
-          Режим: off, adaptive, always (false/true = off/adaptive).
-          Adaptive без своего SQL начинает нужную очистку с RESET ROLE:
-          - обычный SELECT или повторное использование prepared-кеша → без очистки;
-          - отмечен SET → добавить RESET ALL;
-          - Parse добавлен в кеш, но не отправлен до отключения клиента → DEALLOCATE ALL и очистка кеша;
-          - после вытеснения записи остался неотправленный Close → DEALLOCATE ALL и очистка кеша;
-          - ошибка PostgreSQL при включённом prepared-кеше → пометить prepared statements для очистки;
-          - DECLARE CURSOR без последующего CLOSE ALL → добавить CLOSE ALL.
-          Свой cleanup_server_query заменяет встроенные команды по этим признакам.
-          Always требует этот запрос при каждом возврате использованного соединения; prepared-кеш придётся наполнить заново.
-          Off пропускает очистку сессии. ROLLBACK открытой транзакции выполняется в любом режиме.
-          SQL PREPARE сам по себе, временные объекты, LISTEN и эффекты функций не запускают очистку автоматически.
+          Режим очистки: off, adaptive или always. Значения false и true означают off и adaptive.
+          Успешные Parse и Bind при включённом кешировании сами по себе не запускают очистку. Кеш доступен для повторного использования.
+          Обычный SELECT не запускает очистку. Уже назначенная очистка при этом не отменяется.
+          Когда требуется встроенная очистка, pg_doorman сначала выполняет RESET ROLE. Затем при необходимости выполняются RESET ALL, DEALLOCATE ALL и CLOSE ALL.
+          Ответ CommandComplete с тегом SET требует RESET ALL.
+          Если регистрация буферизованного Parse в кеше осталась незавершённой при возврате соединения, требуется DEALLOCATE ALL.
+          Неотправленный Close после вытеснения записи из кеша также требует DEALLOCATE ALL.
+          После ошибки PostgreSQL при включённом кеше подготовленных запросов серверного соединения требуется DEALLOCATE ALL перед повторным использованием соединения.
+          Именованный Parse без управляемого кеша требует RESET ALL, DEALLOCATE ALL и CLOSE ALL.
+          После DECLARE CURSOR требуется CLOSE ALL. Закрытие одного курсора этого требования не снимает.
+          Успешный CLOSE ALL отменяет очистку курсоров. DEALLOCATE ALL очищает LRU подготовленных запросов серверного соединения.
+          Встроенная очистка отменяет RESET ALL после любого тега RESET, даже при сбросе одного параметра.
+          При заданном cleanup_server_query это требование сохраняется. Клиентский DISCARD ALL также требует выполнения заданного запроса.
+          Always выполняет заданный запрос при каждом возврате использованного соединения. Off пропускает очистку сессии.
+          Открытая транзакция сначала откатывается в любом режиме. Непригодное соединение закрывается.
+          SQL PREPARE, временные объекты, LISTEN и эффекты функций отдельно не отслеживаются.
       doc: |
-        Pool override for `general.cleanup_server_connections`: `off`, `adaptive`, `always`;
-        legacy `false`/`true` mean `off`/`adaptive`. Omit to inherit (general defaults to `adaptive`).
-        `off` skips session cleanup; rollback of an open transaction still runs in every mode.
-        `adaptive` acts only on tracked dirtiness: plain `SELECT` adds no reset. Without custom SQL,
-        cleanup starts with `RESET ROLE`, adding `RESET ALL` for SET state, `DEALLOCATE ALL` for prepared
-        cleanup, and `CLOSE ALL` for cursors. Prepared cleanup can arise from pending Parses, deferred
-        eviction Closes or errors with a prepared cache; ordinary cached-statement use is retained.
-        SQL `PREPARE` is not universally tracked, nor are temporary objects, LISTEN or function side effects.
-        `RESET ALL` does not release advisory locks. Legacy tracking trusts RESET/DISCARD command tags;
-        with custom SQL, SET dirtiness is retained conservatively across later RESET/DISCARD tags.
-        `always` executes the effective cleanup query after every used backend, including plain SELECT,
-        adding a round trip and prepared-cache rebuild cost. Choose the query for the state your workload uses.
-        Cleanup runs on backend return: at client disconnect in session pooling, or transaction/autocommit end
-        in transaction pooling, never between statements of an open transaction or during Flush.
-        Mode and query inherit independently. RELOAD replaces affected pools; existing clients keep their old pool.
+        Pool override for `general.cleanup_server_connections`: `off`, `adaptive`, `always`.
+        Legacy `false`/`true` mean `off`/`adaptive`. Omit to inherit the general setting, whose default is `adaptive`.
+        `off` skips session cleanup. Open transactions are rolled back separately before session cleanup in every mode.
+        `always` requires `cleanup_server_query` and executes it once per used-backend return.
+
+        In `adaptive`, a plain `SELECT` does not require cleanup. It does not cancel an earlier cleanup requirement.
+        Successful `Parse` and `Bind` operations with managed caching do not themselves require cleanup, so cached statements can be reused.
+        When built-in cleanup is required, pg_doorman starts with `RESET ROLE`, followed by the required commands in this order:
+        `RESET ALL`, `DEALLOCATE ALL`, `CLOSE ALL`.
+
+        - A `SET` CommandComplete tag requests `RESET ALL`.
+        - Buffered Parse registration left unfinished at checkin requests `DEALLOCATE ALL`.
+        - An unsent Close from LRU eviction requests `DEALLOCATE ALL`.
+        - Any ErrorResponse with the backend prepared cache enabled requests prepared-statement cleanup before reuse. A bad backend is retired instead.
+        - A named Parse without managed caching requests all three cleanup categories. This also applies in session pooling.
+        - `DECLARE CURSOR` requests `CLOSE ALL`. Closing one cursor does not remove this requirement, but a successful `CLOSE ALL` does.
+
+        Built-in tracking clears the SET requirement on any RESET tag, including a single-parameter RESET.
+        It can therefore miss other parameters changed earlier. `DISCARD ALL` clears the parameter, prepared-statement and cursor cleanup flags.
+        Unfinished Parse registration and unsent Closes are checked separately at checkin.
+        Buffered registration finishes after successful processing of the corresponding Sync/Flush exchange and deferred eviction Closes.
+        Both `DEALLOCATE ALL` and `DISCARD ALL` invalidate the backend prepared-statement LRU.
+        With `cleanup_server_query`, RESET preserves a pending SET cleanup requirement and client DISCARD ALL requests the configured cleanup.
+        The configured query replaces the built-in commands. A successful run clears the backend prepared-statement LRU,
+        so later cached executions may need a new Parse on that backend. The pool query cache and client statement mappings remain available.
+
+        Cleanup runs at client disconnect in session pooling and at transaction/autocommit end in transaction pooling.
+        It does not run between statements of an open transaction or during Flush. RELOAD leaves existing clients on their old pool policy.
+        SQL PREPARE, temporary objects, LISTEN and function side effects are not independently tracked.
+        `RESET ALL` does not release advisory locks. Adaptive cleanup does not guarantee complete session isolation.
       default: "None (uses global setting)"
 
     prepared_statements_cache_size:

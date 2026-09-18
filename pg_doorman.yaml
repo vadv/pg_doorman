@@ -285,13 +285,13 @@ general:
   sync_server_parameters: false
 
   # Cleanup mode: off, adaptive (default), or always. Legacy false/true mean off/adaptive.
-  # Pools inherit this mode unless overridden. Mode and query inherit independently.
-  # Adaptive skips clean backends; always runs cleanup_server_query after each use.
+  # Adaptive runs cleanup when server responses or unfinished protocol operations require it.
+  # Always runs cleanup_server_query when a used backend returns.
   # Open transactions are rolled back even in off mode.
   # Default: "adaptive"
   cleanup_server_connections: "adaptive"
 
-  # Optional cleanup SQL; pools may override. Used when the effective mode requests cleanup.
+  # Optional cleanup SQL. Used when the selected mode requires cleanup.
   # Default: None (built-in adaptive cleanup)
   # cleanup_server_query: "DISCARD ALL"
 
@@ -617,17 +617,23 @@ pools:
     # server_lifetime: 300000
 
     # Override general.cleanup_server_connections: off, adaptive, or always (false/true = off/adaptive).
-    # Adaptive: plain SELECT adds no reset; SET triggers RESET ROLE; RESET ALL when no custom query is set.
-    # Pending Parses, deferred Closes, prepared-cache errors and cursors can also require cleanup.
-    # Ordinary prepared-cache reuse is retained; SQL PREPARE, temp tables, LISTEN and function side effects are not universally tracked.
-    # Always requires cleanup_server_query and adds cleanup/cache-rebuild cost after every use.
-    # Open transactions are rolled back in every mode, including off.
+    # Successful Parse and Bind operations with managed caching do not themselves require cleanup, so cached statements can be reused.
+    # Plain SELECT does not require cleanup. It does not cancel an earlier cleanup requirement.
+    # When built-in cleanup is required, it starts with RESET ROLE, then conditionally RESET ALL, DEALLOCATE ALL and CLOSE ALL.
+    # Unfinished buffered Parse registration at checkin requires DEALLOCATE ALL.
+    # An unsent Close from LRU eviction also requires DEALLOCATE ALL.
+    # A backend error with a prepared cache requires DEALLOCATE ALL before reuse. Bad backends are closed.
+    # A named Parse without managed caching requires all three cleanup categories. DECLARE requires cursor cleanup until CLOSE ALL.
+    # SQL PREPARE, temp objects, LISTEN and function side effects are not independently tracked.
+    # Always requires cleanup_server_query on every used-backend return. Off skips session cleanup.
+    # Open transactions are rolled back first in every mode.
     # Default: None (uses global setting)
     # cleanup_server_connections: "adaptive"
 
-    # Override general.cleanup_server_query; mode and query inherit independently.
-    # Used on tracked dirtiness in adaptive mode, after each use in always mode, never in off mode.
-    # Must restore session state and release prepared statements/cursors. Failed cleanup closes the backend.
+    # Override general.cleanup_server_query. Used when adaptive requires cleanup, on each used-backend return in always, never in off.
+    # Must restore session state and release prepared statements and cursors. Failed cleanup closes the backend.
+    # After successful cleanup, pg_doorman clears the backend prepared-statement LRU.
+    # It forgets stored values of parameters that pg_doorman can SET but does not receive through ParameterStatus, such as search_path.
     # Default: None (uses global setting)
     # cleanup_server_query: "DISCARD ALL"
 
