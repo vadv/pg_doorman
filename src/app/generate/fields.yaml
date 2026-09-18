@@ -821,8 +821,8 @@ fields:
           Open transactions are rolled back even in off mode.
         ru: |
           Режим очистки: off, adaptive (по умолчанию), always. Старые false/true означают off/adaptive.
-          Пул наследует режим, если не переопределён. Режим и запрос наследуются независимо.
-          Adaptive пропускает чистые backend; always выполняет cleanup_server_query после каждого использования.
+          Для очистки значения пула имеют приоритет над general; режим и SQL выбираются независимо.
+          Adaptive очищает по отмеченным изменениям; always — при каждом возврате использованного соединения.
           Открытые транзакции откатываются даже в режиме off.
       doc: |
         Default cleanup mode: `off`, `adaptive`, or `always`. Legacy booleans `false` and `true`
@@ -835,7 +835,7 @@ fields:
     cleanup_server_query:
       config:
         en: "Optional cleanup SQL; pools may override. Used when the effective mode requests cleanup."
-        ru: "Необязательный SQL очистки; можно переопределить в пуле. Выполняется по выбранному режиму."
+        ru: "Необязательный SQL очистки. Выполняется по выбранному режиму."
       doc: "Default [cleanup_server_query](pool.md#cleanup_server_query) for all pools. Pool values override it independently of cleanup mode. Unset retains built-in selective SQL in adaptive mode."
       default: "None (built-in adaptive cleanup)"
 
@@ -1411,9 +1411,9 @@ fields:
           Used on tracked dirtiness in adaptive mode, after each use in always mode, never in off mode.
           Must restore session state and release prepared statements/cursors. Failed cleanup closes the backend.
         ru: |
-          Переопределить general.cleanup_server_query; режим и запрос наследуются независимо.
-          В adaptive выполняется при отслеживаемых изменениях, в always после каждого использования, в off никогда.
-          Должен сбрасывать сессию, prepared statements и курсоры. При ошибке backend закрывается.
+          SQL очистки сессии: в adaptive — по отмеченным изменениям, в always — при возврате использованного соединения.
+          В off запрос не выполняется. Он должен сбрасывать сессию, prepared statements и курсоры.
+          При ошибке очистки серверное соединение закрывается.
       doc: |
         SQL used when the cleanup mode requests it; overrides `general.cleanup_server_query`.
         `always` requires an effective query. `adaptive` without a query keeps built-in selective SQL;
@@ -1437,12 +1437,18 @@ fields:
           Always requires cleanup_server_query and adds cleanup/cache-rebuild cost after every use.
           Open transactions are rolled back in every mode, including off.
         ru: |
-          Переопределить general.cleanup_server_connections: off, adaptive, always (false/true = off/adaptive).
-          Adaptive: обычный SELECT без сброса; после SET выполняются RESET ROLE; RESET ALL, если нет своего запроса.
-          Незавершённые Parse, отложенные Close, ошибки prepared-кеша и курсоры также могут требовать очистки.
-          Обычный prepared-кеш сохраняется; SQL PREPARE, temp-таблицы, LISTEN и эффекты функций отслеживаются не всегда.
-          Always требует cleanup_server_query; очистка и восстановление кеша выполняются после каждого использования.
-          Открытые транзакции откатываются в любом режиме, включая off.
+          Режим: off, adaptive, always (false/true = off/adaptive).
+          Adaptive без своего SQL начинает нужную очистку с RESET ROLE:
+          - обычный SELECT или повторное использование prepared-кеша → без очистки;
+          - отмечен SET → добавить RESET ALL;
+          - Parse добавлен в кеш, но не отправлен до отключения клиента → DEALLOCATE ALL и очистка кеша;
+          - после вытеснения записи остался неотправленный Close → DEALLOCATE ALL и очистка кеша;
+          - ошибка PostgreSQL при включённом prepared-кеше → пометить prepared statements для очистки;
+          - DECLARE CURSOR без последующего CLOSE ALL → добавить CLOSE ALL.
+          Свой cleanup_server_query заменяет встроенные команды по этим признакам.
+          Always требует этот запрос при каждом возврате использованного соединения; prepared-кеш придётся наполнить заново.
+          Off пропускает очистку сессии. ROLLBACK открытой транзакции выполняется в любом режиме.
+          SQL PREPARE сам по себе, временные объекты, LISTEN и эффекты функций не запускают очистку автоматически.
       doc: |
         Pool override for `general.cleanup_server_connections`: `off`, `adaptive`, `always`;
         legacy `false`/`true` mean `off`/`adaptive`. Omit to inherit (general defaults to `adaptive`).
