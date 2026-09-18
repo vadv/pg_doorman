@@ -799,3 +799,14 @@ round-trip к PostgreSQL даже для значения по умолчани�
 `cache_total / (cache_total + backend_total)` — это hit rate.
 
 По умолчанию: `";"`.
+
+## server_reset_query
+
+Необязательная строка SQL полного сброса backend. Значение пула имеет приоритет
+над `general.server_reset_query`; без обоих значений сохраняется выборочная
+очистка. Пустое значение не отключает reset. Запрос выполняется перед повторной
+выдачей использованного backend и должен сбрасывать в том числе prepared
+statements, курсоры, GUC и identity. Ошибка или неподдерживаемый reset закрывает
+backend. При RELOAD новая policy применяется к новым поколениям пулов.
+
+[Семантика, ограничения и пример для Greengage](../tutorials/greengage.md).

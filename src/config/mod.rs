@@ -54,6 +54,18 @@ pub use web::Web;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Reject queries that cannot perform a reset or would truncate a protocol string.
+fn validate_server_reset_query(query: Option<&str>, setting: &str) -> Result<(), Error> {
+    if let Some(query) = query {
+        if query.chars().all(|ch| ch.is_whitespace() || ch == ';') || query.contains('\0') {
+            return Err(Error::BadConfig(format!(
+                "{setting} must contain SQL and must not contain null bytes; omit it to keep selective cleanup"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Configuration file format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
@@ -423,6 +435,20 @@ impl Config {
 
     /// Validate the configuration.
     pub async fn validate(&mut self) -> Result<(), Error> {
+        validate_server_reset_query(
+            self.general.server_reset_query.as_deref(),
+            "general.server_reset_query",
+        )?;
+        for (pool_name, pool) in &self.pools {
+            if pool.effective_server_reset_query(&self.general).is_some()
+                && !pool.cleanup_server_connections
+            {
+                return Err(Error::BadConfig(format!(
+                    "pools.{pool_name}.server_reset_query requires cleanup_server_connections = true (including an inherited general.server_reset_query)"
+                )));
+            }
+        }
+
         // Validate Talos
         self.talos.validate().await?;
 

@@ -311,6 +311,7 @@ mod tests {
             "test_db",
             Arc::new(DashMap::new()),
             false,
+            None,
             false,
             0,
             "test_app".to_string(),

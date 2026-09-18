@@ -64,6 +64,7 @@ async fn setup_internal_pool(world: &mut DoormanWorld, size: usize, _mode: Strin
         "postgres",
         client_server_map,
         true,  // cleanup_connections
+        None,  // server_reset_query
         false, // log_client_parameter_status_changes
         0,     // prepared_statement_cache_size
         "pool_bench".to_string(),
@@ -418,6 +419,7 @@ async fn setup_internal_pool_with_lifetimes(
         "postgres",
         client_server_map,
         true,
+        None,
         false,
         0,
         "pool_bench".to_string(),

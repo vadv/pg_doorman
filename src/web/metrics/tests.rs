@@ -63,30 +63,15 @@ async fn test_prometheus_server_basic() {
     };
 
     // Send a simple HTTP request
-    let request = "GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    let request = "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     stream.write_all(request.as_bytes()).await.unwrap();
 
     // Read the response
     let mut response = Vec::new();
-    let mut buf = [0u8; 1024];
-
-    // Set a timeout for reading
+    // Metrics are registered lazily: the asserted family need not fit in the
+    // first TCP read. Ask the server to close and read the complete response.
     match tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match stream.read(&mut buf).await {
-                Ok(0) => break, // EOF
-                Ok(n) => {
-                    response.extend_from_slice(&buf[..n]);
-                    if response.len() > 100 {
-                        // Just need enough to verify headers
-                        break;
-                    }
-                }
-                Err(e) => {
-                    panic!("Failed to read from socket: {e}");
-                }
-            }
-        }
+        stream.read_to_end(&mut response).await.unwrap();
     })
     .await
     {
