@@ -812,12 +812,32 @@ fields:
         `application_name` setting instead.
       default: "false"
 
-    server_reset_query:
+    cleanup_server_connections:
       config:
-        en: "Default full reset SQL; pools may override. Unset keeps selective cleanup."
-        ru: "Полный SQL-сброс по умолчанию; можно переопределить в пуле. Если не задан — выборочная очистка."
-      doc: "Default [server_reset_query](pool.md#server_reset_query) for all pools. A pool value overrides it; when both are unset, selective cleanup is unchanged."
-      default: "None (selective cleanup)"
+        en: |
+          Cleanup mode: off, adaptive (default), or always. Legacy false/true mean off/adaptive.
+          Pools inherit this mode unless overridden. Mode and query inherit independently.
+          Adaptive skips clean backends; always runs cleanup_server_query after each use.
+          Open transactions are rolled back even in off mode.
+        ru: |
+          Режим очистки: off, adaptive (по умолчанию), always. Старые false/true означают off/adaptive.
+          Пул наследует режим, если не переопределён. Режим и запрос наследуются независимо.
+          Adaptive пропускает чистые backend; always выполняет cleanup_server_query после каждого использования.
+          Открытые транзакции откатываются даже в режиме off.
+      doc: |
+        Default cleanup mode: `off`, `adaptive`, or `always`. Legacy booleans `false` and `true`
+        are accepted as `off` and `adaptive`; generated configurations use strings.
+        Pools inherit this value unless explicitly overridden. An explicit pool `true` means
+        `adaptive`, even if the general mode is `always`. Query and mode inherit independently.
+        See [pool cleanup policy](pool.md#cleanup_server_connections) for triggers and costs.
+      default: '"adaptive"'
+
+    cleanup_server_query:
+      config:
+        en: "Optional cleanup SQL; pools may override. Used when the effective mode requests cleanup."
+        ru: "Необязательный SQL очистки; можно переопределить в пуле. Выполняется по выбранному режиму."
+      doc: "Default [cleanup_server_query](pool.md#cleanup_server_query) for all pools. Pool values override it independently of cleanup mode. Unset retains built-in selective SQL in adaptive mode."
+      default: "None (built-in adaptive cleanup)"
 
     message_size_to_be_stream:
       config:
@@ -1384,46 +1404,62 @@ fields:
       doc: "Override global sync_server_parameters for this pool. When enabled, client-sent session parameters (e.g. search_path, work_mem) are applied via SET queries on checkout. If not specified, the global setting is used."
       default: "None (uses global setting)"
 
-    server_reset_query:
+    cleanup_server_query:
       config:
         en: |
-          Full reset SQL before backend reuse; unset inherits general.server_reset_query.
-          Must clear session state, prepared statements and cursors; requires cleanup_server_connections.
-          Failed resets close the backend. Client SQL is not rewritten.
+          Override general.cleanup_server_query; mode and query inherit independently.
+          Used on tracked dirtiness in adaptive mode, after each use in always mode, never in off mode.
+          Must restore session state and release prepared statements/cursors. Failed cleanup closes the backend.
         ru: |
-          Полный SQL-сброс перед повторной выдачей backend; по умолчанию general.server_reset_query.
-          Должен очищать сессию, prepared statements и курсоры; требует cleanup_server_connections.
-          При неудачном сбросе backend закрывается. Клиентский SQL не переписывается.
+          Переопределить general.cleanup_server_query; режим и запрос наследуются независимо.
+          В adaptive выполняется при отслеживаемых изменениях, в always после каждого использования, в off никогда.
+          Должен сбрасывать сессию, prepared statements и курсоры. При ошибке backend закрывается.
       doc: |
-        Full reset before backend reuse; overrides `general.server_reset_query`.
-        When both are unset, selective cleanup is unchanged.
-        Requires `cleanup_server_connections = true` and nonempty SQL that restores session defaults
-        and releases prepared statements, cursors and other session resources. Open transactions are
-        rolled back first. Multiple statements and SELECT results are supported. Failure, unsupported
-        command notices or a non-idle result close the backend; execution is bounded by `general.connect_timeout`.
-        Client SQL is not rewritten. RELOAD replaces affected pools; existing clients retain their old pool.
-        PostgreSQL example: `server_reset_query = "DISCARD ALL"`. For Greengage 6/7 use the explicit sequence:
-        `SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP;`.
+        SQL used when the cleanup mode requests it; overrides `general.cleanup_server_query`.
+        `always` requires an effective query. `adaptive` without a query keeps built-in selective SQL;
+        `off` ignores a valid query. Empty, whitespace/semicolon-only and NUL-containing values are rejected in every mode.
+        The operator must choose SQL that restores session defaults and releases prepared statements,
+        cursors and required session resources. Multiple statements and SELECT results are drained to an idle result.
+        SQL/transport errors, unsupported-command notices, timeout (`general.connect_timeout`) or a non-idle result
+        retire the backend. Successful custom cleanup invalidates backend prepared/GUC tracking. Client SQL is not rewritten.
+        PostgreSQL example: `cleanup_server_query = "DISCARD ALL"`. Greengage example:
+        `CLOSE ALL; SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS;`.
+        This example does not remove temporary objects or reset sequence session state.
       default: "None (uses global setting)"
 
     cleanup_server_connections:
       config:
         en: |
-          Reset session state (SET, prepared statements, cursors) when returning a connection to pool.
-          ROLLBACK for open transactions is always executed regardless of this setting.
-          Prevents state leaking between clients in transaction mode.
+          Override general.cleanup_server_connections: off, adaptive, or always (false/true = off/adaptive).
+          Adaptive: plain SELECT adds no reset; SET triggers RESET ROLE; RESET ALL when no custom query is set.
+          Pending Parses, deferred Closes, prepared-cache errors and cursors can also require cleanup.
+          Ordinary prepared-cache reuse is retained; SQL PREPARE, temp tables, LISTEN and function side effects are not universally tracked.
+          Always requires cleanup_server_query and adds cleanup/cache-rebuild cost after every use.
+          Open transactions are rolled back in every mode, including off.
         ru: |
-          Сбрасывать состояние сессии (SET, prepared statements, курсоры) при возврате соединения в пул.
-          ROLLBACK для открытых транзакций выполняется всегда независимо от этой настройки.
-          Предотвращает утечку состояния между клиентами в транзакционном режиме.
+          Переопределить general.cleanup_server_connections: off, adaptive, always (false/true = off/adaptive).
+          Adaptive: обычный SELECT без сброса; после SET выполняются RESET ROLE; RESET ALL, если нет своего запроса.
+          Незавершённые Parse, отложенные Close, ошибки prepared-кеша и курсоры также могут требовать очистки.
+          Обычный prepared-кеш сохраняется; SQL PREPARE, temp-таблицы, LISTEN и эффекты функций отслеживаются не всегда.
+          Always требует cleanup_server_query; очистка и восстановление кеша выполняются после каждого использования.
+          Открытые транзакции откатываются в любом режиме, включая off.
       doc: |
-        Controls whether pg_doorman resets session state when a connection is returned to the pool.
-        When enabled and the session was modified, pg_doorman sends: `RESET ROLE`, plus conditionally
-        `RESET ALL` (if SET was used), `DEALLOCATE ALL` (if PREPARE was used), `CLOSE ALL` (if cursors
-        were opened). Note: `ROLLBACK` for open transactions is always executed regardless of this setting.
-        Disable only if your application never uses SET, prepared statements, or cursors and you want
-        to save the cleanup roundtrip.
-      default: "true"
+        Pool override for `general.cleanup_server_connections`: `off`, `adaptive`, `always`;
+        legacy `false`/`true` mean `off`/`adaptive`. Omit to inherit (general defaults to `adaptive`).
+        `off` skips session cleanup; rollback of an open transaction still runs in every mode.
+        `adaptive` acts only on tracked dirtiness: plain `SELECT` adds no reset. Without custom SQL,
+        cleanup starts with `RESET ROLE`, adding `RESET ALL` for SET state, `DEALLOCATE ALL` for prepared
+        cleanup, and `CLOSE ALL` for cursors. Prepared cleanup can arise from pending Parses, deferred
+        eviction Closes or errors with a prepared cache; ordinary cached-statement use is retained.
+        SQL `PREPARE` is not universally tracked, nor are temporary objects, LISTEN or function side effects.
+        `RESET ALL` does not release advisory locks. Legacy tracking trusts RESET/DISCARD command tags;
+        with custom SQL, SET dirtiness is retained conservatively across later RESET/DISCARD tags.
+        `always` executes the effective cleanup query after every used backend, including plain SELECT,
+        adding a round trip and prepared-cache rebuild cost. Choose the query for the state your workload uses.
+        Cleanup runs on backend return: at client disconnect in session pooling, or transaction/autocommit end
+        in transaction pooling, never between statements of an open transaction or during Flush.
+        Mode and query inherit independently. RELOAD replaces affected pools; existing clients keep their old pool.
+      default: "None (uses global setting)"
 
     prepared_statements_cache_size:
       config:

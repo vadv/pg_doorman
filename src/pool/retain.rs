@@ -310,7 +310,7 @@ mod tests {
             User::default(),
             "test_db",
             Arc::new(DashMap::new()),
-            false,
+            crate::config::CleanupMode::Off,
             None,
             false,
             0,

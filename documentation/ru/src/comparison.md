@@ -73,7 +73,7 @@ PgCat намеренно опущен: у него центр тяжести —
 | `min_pool_size` (warm connections) | Да | Нет | Да |
 | Prepared statements в transaction mode | Да (именованные и анонимные, двухуровневый кеш, query interner) | Да (именованные, с 1.21, `max_prepared_statements`) | Да (именованные, `pool_reserve_prepared_statement`) |
 | Кеш анонимного `Parse` для производительности | Да (`DOORMAN_N`, переиспользование между клиентами пула) | Нет (анонимный `Parse` проходит без изменений) | Нет (требуются именованные prepared statements) |
-| Умная очистка при возврате соединения (пропустить `DEALLOCATE ALL`, если кеш не менялся) | Да (`RESET ALL` / `DEALLOCATE ALL` по факту мутаций) | Нет (всегда `DISCARD ALL`, если задан `server_reset_query`) | Да (auto) |
+| Умная очистка при возврате соединения (пропустить `DEALLOCATE ALL`, если кеш не менялся) | Да (`RESET ALL` / `DEALLOCATE ALL` по факту мутаций) | Зависит от режима пула и `server_reset_query_always` | Да (auto) |
 | LISTEN / NOTIFY pinning в transaction mode | Нет | Нет | Экспериментально |
 | Cross-rule connection cap (`shared_pool`) | Нет | Нет | Да (с 1.5.1) |
 | Команды администратора `PAUSE` / `RESUME` / `RECONNECT` | Да | Да | Да (с 1.4.1) |

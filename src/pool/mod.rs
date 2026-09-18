@@ -419,7 +419,8 @@ impl ConnectionPool {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             config.general.startup_parameters.hash(&mut hasher);
             config.general.sync_server_parameters.hash(&mut hasher);
-            config.general.server_reset_query.hash(&mut hasher);
+            config.general.cleanup_server_query.hash(&mut hasher);
+            config.general.cleanup_server_connections.hash(&mut hasher);
             hasher.finish()
         };
         // Load only; the hash is not advanced until the new pool map has
@@ -565,9 +566,9 @@ impl ConnectionPool {
                     user.clone(),
                     server_database.as_str(),
                     client_server_map.clone(),
-                    pool_config.cleanup_server_connections,
+                    pool_config.effective_cleanup_server_connections(&config.general),
                     pool_config
-                        .effective_server_reset_query(&config.general)
+                        .effective_cleanup_server_query(&config.general)
                         .map(str::to_owned),
                     pool_config.log_client_parameter_status_changes,
                     server_prepared_statements_cache_size,
@@ -786,9 +787,9 @@ impl ConnectionPool {
                             shared_user.clone(),
                             server_database.as_str(),
                             client_server_map.clone(),
-                            pool_config.cleanup_server_connections,
+                            pool_config.effective_cleanup_server_connections(&config.general),
                             pool_config
-                                .effective_server_reset_query(&config.general)
+                                .effective_cleanup_server_query(&config.general)
                                 .map(str::to_owned),
                             pool_config.log_client_parameter_status_changes,
                             server_prepared_statements_cache_size,
@@ -1529,7 +1530,8 @@ mod tests {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         general.startup_parameters.hash(&mut hasher);
         general.sync_server_parameters.hash(&mut hasher);
-        general.server_reset_query.hash(&mut hasher);
+        general.cleanup_server_query.hash(&mut hasher);
+        general.cleanup_server_connections.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -1617,21 +1619,28 @@ mod tests {
     }
 
     #[test]
-    fn reload_general_server_reset_query_changes_fingerprints() {
+    fn reload_general_cleanup_policy_changes_fingerprints() {
         let pool = ConfigPool::default();
         let before = General::default();
-        let after = General {
-            server_reset_query: Some("DISCARD ALL".into()),
-            ..General::default()
-        };
-        assert_ne!(
-            compute_pool_fingerprint(&pool, &before),
-            compute_pool_fingerprint(&pool, &after)
-        );
-        assert_ne!(
-            pool.hash_value() ^ compute_general_startup_hash(&before),
-            pool.hash_value() ^ compute_general_startup_hash(&after)
-        );
+        for after in [
+            General {
+                cleanup_server_query: Some("DISCARD ALL".into()),
+                ..General::default()
+            },
+            General {
+                cleanup_server_connections: crate::config::CleanupMode::Off,
+                ..General::default()
+            },
+        ] {
+            assert_ne!(
+                compute_pool_fingerprint(&pool, &before),
+                compute_pool_fingerprint(&pool, &after)
+            );
+            assert_ne!(
+                pool.hash_value() ^ compute_general_startup_hash(&before),
+                pool.hash_value() ^ compute_general_startup_hash(&after)
+            );
+        }
     }
 
     #[test]

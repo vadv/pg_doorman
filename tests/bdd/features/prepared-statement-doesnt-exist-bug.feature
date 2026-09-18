@@ -20,7 +20,7 @@ Feature: Prepared statement cache desync on client disconnect before Sync
       """
     And fixtures from "tests/fixture.sql" applied
 
-  @server-reset-query-pending-parse
+  @cleanup-server-query-pending-parse
   Scenario Outline: Client disconnect after Parse without Sync causes stale server cache
     Given pg_doorman started with config:
       """
@@ -60,7 +60,7 @@ Feature: Prepared statement cache desync on client disconnect before Sync
     Examples:
       | reset_config                      |
       | # selective cleanup               |
-      | server_reset_query = "DISCARD ALL" |
+      | cleanup_server_query = "DISCARD ALL" |
 
   Scenario: TCP abort after Parse without Sync causes stale server cache
     Given pg_doorman started with config:

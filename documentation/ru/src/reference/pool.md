@@ -62,26 +62,36 @@
 
 ### cleanup_server_connections
 
-Сбрасывать ли состояние сессии при возврате соединения в пул.
-Когда параметр включён и сессия была изменена, pg_doorman отправляет: `RESET ROLE`, плюс при необходимости
-`RESET ALL` (если использовался SET), `DEALLOCATE ALL` (если использовался PREPARE), `CLOSE ALL`
-(если открывались курсоры). Замечание: `ROLLBACK` для открытых транзакций выполняется всегда, независимо
-от этой настройки. Отключайте только если ваше приложение никогда не использует SET, prepared statements
-или курсоры и вы хотите сэкономить roundtrip на очистке.
+Переопределяет режим из general: `off`, `adaptive`, `always`; старые `false`/`true` означают `off`/`adaptive`.
+Если не задан, наследуется general (по умолчанию `adaptive`). `off` пропускает очистку сессии;
+открытая транзакция откатывается в любом режиме.
 
-По умолчанию: `true`.
+`adaptive` работает по отслеживаемым изменениям: обычный SELECT не добавляет сброса. Без своего запроса
+очистка начинается с `RESET ROLE`, затем добавляются `RESET ALL` для SET, `DEALLOCATE ALL` для
+prepared-состояния и `CLOSE ALL` для курсоров. Незавершённые Parse, отложенные eviction Close и ошибки
+при включённом prepared-кеше могут потребовать его очистки; обычное использование кеша сохраняет его.
+SQL PREPARE отслеживается не всегда, как и temp-объекты, LISTEN и эффекты функций.
+`RESET ALL` не снимает advisory-блокировки. Старый алгоритм доверяет тегам RESET/DISCARD;
+со своим запросом изменения SET сохраняются консервативно даже после последующих RESET/DISCARD.
 
-### server_reset_query
-
-Полный SQL-сброс перед повторной выдачей backend; переопределяет `general.server_reset_query`.
-Если оба значения не заданы, сохраняется выборочная очистка.
-Требует `cleanup_server_connections = true` и непустой запрос, очищающий сессию, prepared statements,
-курсоры и другие ресурсы сессии. Открытая транзакция сначала откатывается. Несколько команд и SELECT
-поддерживаются; ошибка, NOTICE о неподдерживаемой команде, таймаут (`general.connect_timeout`)
-или незавершённая транзакция закрывают backend. Клиентский SQL не переписывается.
+`always` выполняет эффективный запрос после каждого использования backend, включая обычный SELECT:
+это дополнительный round trip и повторное наполнение prepared-кеша.
+Очистка выполняется при возврате backend: после отключения клиента в session mode, после транзакции/autocommit
+в transaction mode; не между командами открытой транзакции и не во время Flush. Режим и запрос наследуются независимо.
 RELOAD заменяет затронутые пулы; уже подключённые клиенты сохраняют прежний пул.
-Пример PostgreSQL: `server_reset_query = "DISCARD ALL"`. Для Greengage 6/7 — явная последовательность:
-`SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP;`.
+
+### cleanup_server_query
+
+SQL для выбранного режима очистки; переопределяет `general.cleanup_server_query` независимо от режима.
+`always` требует эффективного запроса; `adaptive` без него использует встроенный SQL. В `off` допустимый запрос
+не выполняется. Пустые, пробельные, состоящие только из `;` и содержащие NUL значения запрещены в любом режиме.
+Оператор выбирает запрос, сбрасывающий сессию, prepared statements, курсоры и нужные приложению ресурсы.
+Несколько команд и SELECT поддерживаются; ошибка SQL/транспорта, NOTICE о неподдерживаемой команде,
+таймаут (`general.connect_timeout`) или не-idle результат закрывают backend. После успешной очистки
+локальные prepared/GUC-кеши сбрасываются. Клиентский SQL не переписывается.
+Пример PostgreSQL: `cleanup_server_query = "DISCARD ALL"`. Пример Greengage:
+`CLOSE ALL; SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS;`.
+Этот пример не удаляет временные объекты и не сбрасывает состояние последовательностей в сессии.
 
 ### scaling_warm_pool_ratio
 

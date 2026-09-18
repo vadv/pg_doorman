@@ -71,26 +71,30 @@ Useful when one user (operations tooling, migrations) needs session semantics bu
 
 ## Cleanup on checkin
 
-Cleanup in transaction mode is **mutation-tracked**, not unconditional. PgDoorman watches each transaction for `SET`, `PREPARE`, and `DECLARE CURSOR`, and only when the backend returns to the pool with one of those flags set does it issue `RESET ALL`, `DEALLOCATE ALL`, or `CLOSE ALL` respectively. A read-only transaction skips cleanup entirely — that's a measurable win on hot OLTP paths.
+`cleanup_server_connections` defaults to `adaptive`. A pool inherits general settings unless it overrides them;
+mode and `cleanup_server_query` inherit independently. Legacy `true` means `adaptive`, and `false` means `off`.
+Open transactions are rolled back in every mode, including `off`.
 
-What gets reset when a flag fires:
+In adaptive mode, plain `SELECT` adds no cleanup round trip. Without custom SQL, a tracked SET causes
+`RESET ROLE; RESET ALL;`; cursor state adds `CLOSE ALL`. Pending Parses, deferred eviction Closes and errors
+with a prepared cache can require `DEALLOCATE ALL`, which also clears the backend prepared cache.
+Ordinary cached-statement use keeps that cache. SQL PREPARE is not universally tracked; temporary objects,
+LISTEN and function side effects are outside this tracking. `RESET ALL` does not unlock advisory locks.
+Legacy RESET/DISCARD tags can clear tracking; configured adaptive cleanup retains SET dirtiness conservatively.
 
-- `SET` flag → `RESET ALL` drops session-level GUCs and runs `pg_advisory_unlock_all` implicitly.
-- `PREPARE` flag → `DEALLOCATE ALL` drops PostgreSQL-side prepared statements that the driver named explicitly. PgDoorman's own prepared-statement cache survives the reset because it is keyed by query text, not by backend name.
-- `DECLARE CURSOR` flag → `CLOSE ALL` drops cursors.
-
-`DEALLOCATE ALL` and `DISCARD ALL` issued by the client clear that client's prepared-statement cache (so the next `Parse` registers anew). The pool-level shared cache is not affected; other clients keep their entries.
-
-To opt out of cleanup entirely (for performance, in tightly-controlled deployments):
+A custom query replaces selective SQL when adaptive cleanup is needed. `always` runs the effective query
+after every used backend, including plain SELECT, at the cost of a round trip and prepared-cache rebuild.
+For PostgreSQL workloads that favor prepared-cache reuse, keep the default:
 
 ```yaml
-pools:
-  mydb:
-    pool_mode: "transaction"
-    cleanup_server_connections: false
+general:
+  cleanup_server_connections: adaptive
 ```
 
-Only do this if you are sure your application never leaks session state. The mutation-tracked default is already cheap when no mutation happened, so the opt-out is rarely worth the risk.
+Choose cleanup SQL for the session resources your application uses. `off` skips session cleanup even when a query is configured.
+RELOAD applies changed policies to new pools; existing clients keep their old pool.
+
+Cleanup runs on backend return: client disconnect in session mode, transaction/autocommit end in transaction mode; not within an open transaction or during Flush.
 
 ## Reference
 

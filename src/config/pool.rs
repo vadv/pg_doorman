@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use super::{Duration, PoolMode, User};
+use super::{CleanupMode, Duration, PoolMode, User};
 
 /// Custom deserializer for users field that supports both formats:
 /// - Array format (recommended): `users: [{ username: "user1", ... }]`
@@ -79,12 +79,12 @@ pub struct Pool {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_lifetime: Option<u64>,
 
-    #[serde(default = "Pool::default_cleanup_server_connections")]
-    pub cleanup_server_connections: bool,
-
-    /// Full session reset; unset inherits general.server_reset_query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub server_reset_query: Option<String>,
+    pub cleanup_server_connections: Option<CleanupMode>,
+
+    /// Full session reset; unset inherits general.cleanup_server_query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_server_query: Option<String>,
 
     #[serde(default)] // False
     pub log_client_parameter_status_changes: bool,
@@ -231,10 +231,6 @@ impl Pool {
         String::from("127.0.0.1")
     }
 
-    pub fn default_cleanup_server_connections() -> bool {
-        true
-    }
-
     /// Resolve scaling config by merging pool-level overrides with general defaults.
     /// Anticipation/burst params are global-only by design (no per-pool override).
     pub fn resolve_scaling_config(
@@ -254,23 +250,23 @@ impl Pool {
         }
     }
 
-    pub fn effective_server_reset_query<'a>(
+    pub fn effective_cleanup_server_connections(&self, general: &super::General) -> CleanupMode {
+        self.cleanup_server_connections
+            .unwrap_or(general.cleanup_server_connections)
+    }
+
+    pub fn effective_cleanup_server_query<'a>(
         &'a self,
         general: &'a super::General,
     ) -> Option<&'a str> {
-        self.server_reset_query
+        self.cleanup_server_query
             .as_deref()
-            .or(general.server_reset_query.as_deref())
+            .or(general.cleanup_server_query.as_deref())
     }
 
     pub async fn validate(&mut self) -> Result<(), Error> {
-        if let Some(query) = &self.server_reset_query {
-            super::validate_server_reset_query(query)?;
-            if !self.cleanup_server_connections {
-                return Err(Error::BadConfig(
-                    "pool.server_reset_query requires cleanup_server_connections = true".into(),
-                ));
-            }
+        if let Some(query) = &self.cleanup_server_query {
+            super::validate_cleanup_server_query(query)?;
         }
         crate::config::startup_parameters::validate(
             &self.startup_parameters,
@@ -480,8 +476,8 @@ impl Default for Pool {
             connect_timeout: None,
             idle_timeout: None,
             server_lifetime: None,
-            cleanup_server_connections: true,
-            server_reset_query: None,
+            cleanup_server_connections: None,
+            cleanup_server_query: None,
             log_client_parameter_status_changes: false,
             application_name: None,
             prepared_statements_cache_size: None,

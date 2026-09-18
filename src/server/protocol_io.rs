@@ -93,9 +93,6 @@ pub(crate) async fn send_and_flush_timeout(
 
 /// Flushes messages and records write stats/activity.
 pub(crate) async fn send_and_flush(server: &mut Server, messages: &BytesMut) -> Result<(), Error> {
-    if server.server_reset_query.is_some() {
-        server.reset_pending = true;
-    }
     server.stats.data_sent(messages.len());
     server.stats.wait_writing();
 
@@ -521,7 +518,11 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
             server.cleanup_state.needs_cleanup_declare = true;
         }
         CommandCompleteEffect::DisarmSet => {
-            server.cleanup_state.needs_cleanup_set = false;
+            // RESET has the same tag for one GUC and ALL. Keep the configured
+            // cleanup obligation until our own complete batch succeeds.
+            if !server.custom_cleanup_enabled() || server.resetting {
+                server.cleanup_state.needs_cleanup_set = false;
+            }
         }
         CommandCompleteEffect::DisarmDeclare => {
             server.cleanup_state.needs_cleanup_declare = false;
@@ -533,6 +534,11 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
         CommandCompleteEffect::DisarmAll => {
             server.cleanup_state.reset();
             drop_prepared_statement_cache_on_reset(server, "DISCARD ALL");
+            // A fork may complete DISCARD locally only, even with notices muted.
+            // Honour the configured cleanup while preserving native cache invalidation.
+            if server.custom_cleanup_enabled() && !server.resetting {
+                server.cleanup_state.needs_cleanup_set = true;
+            }
         }
     }
 }
