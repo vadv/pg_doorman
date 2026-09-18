@@ -28,7 +28,6 @@
 # Pooling
 
 - [Pool Modes](concepts/pool-modes.md)
-- [Greengage and backend reset](tutorials/greengage.md)
 - [Pool Coordinator](concepts/pool-coordinator.md)
 - [Anonymous Parse Caching](tutorials/prepared-statements.md)
 - [PostgreSQL startup parameters](tutorials/startup-parameters.md)

@@ -287,6 +287,7 @@ fn write_pool_fields(out: &mut String, f: &FieldsData) {
         "pool_mode",
         "log_client_parameter_status_changes",
         "cleanup_server_connections",
+        "server_reset_query",
         "scaling_warm_pool_ratio",
         "scaling_fast_retries",
         "max_db_connections",
@@ -295,7 +296,6 @@ fn write_pool_fields(out: &mut String, f: &FieldsData) {
         "reserve_pool_timeout",
         "min_guaranteed_pool_size",
         "sync_server_parameters",
-        "server_reset_query",
         "startup_parameters",
     ];
 

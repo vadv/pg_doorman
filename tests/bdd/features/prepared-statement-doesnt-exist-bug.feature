@@ -20,7 +20,8 @@ Feature: Prepared statement cache desync on client disconnect before Sync
       """
     And fixtures from "tests/fixture.sql" applied
 
-  Scenario: Client disconnect after Parse without Sync causes stale server cache
+  @server-reset-query-pending-parse
+  Scenario Outline: Client disconnect after Parse without Sync causes stale server cache
     Given pg_doorman started with config:
       """
       [general]
@@ -36,6 +37,7 @@ Feature: Prepared statement cache desync on client disconnect before Sync
       server_host = "127.0.0.1"
       server_port = ${PG_PORT}
       pool_mode = "transaction"
+      <reset_config>
 
       [[pools.example_db.users]]
       username = "example_user_1"
@@ -54,6 +56,11 @@ Feature: Prepared statement cache desync on client disconnect before Sync
     And we send Execute "" to session "two"
     And we send Sync to session "two"
     Then session "two" should receive DataRow with "30"
+
+    Examples:
+      | reset_config                      |
+      | # selective cleanup               |
+      | server_reset_query = "DISCARD ALL" |
 
   Scenario: TCP abort after Parse without Sync causes stale server cache
     Given pg_doorman started with config:

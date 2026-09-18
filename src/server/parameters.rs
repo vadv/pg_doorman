@@ -240,8 +240,7 @@ impl ServerParameters {
         }
     }
 
-    /// Preserve reported/server-owned values; forget SET values reset without
-    /// ParameterStatus so a later checkout cannot mistake them for current state.
+    /// A full reset changes GUCs that PostgreSQL does not report in ParameterStatus.
     pub(crate) fn forget_untracked(&mut self) {
         self.parameters
             .retain(|key, _| TRACKED_PARAMETERS.contains(key) || is_set_forbidden(key));

@@ -35,12 +35,25 @@ use crate::messages::{
 use super::parameters::ServerParameters;
 use super::server_backend::Server;
 
-// CommandComplete tags are used conservatively: RESET cannot distinguish one
-// GUC from all GUCs, and Greengage DISCARD ALL has only coordinator-local effect.
+// PostgreSQL CommandComplete message payloads for tracking session state changes.
+//
+// A checkin-time `RESET ALL` / `DEALLOCATE ALL` / `CLOSE ALL` is a heuristic
+// upper bound: we arm the `needs_cleanup_*` flags when we see a statement that
+// *might* have mutated the session, and we disarm them when we see a statement
+// that has since restored it. Disarming matters because otherwise a client that
+// performs its own reset batch (e.g. pgx on internal context deadline sends
+// `SET SESSION AUTHORIZATION DEFAULT; RESET ALL; CLOSE ALL; UNLISTEN *;
+// DISCARD PLANS; ...`) leaves pg_doorman thinking the connection is still dirty
+// and triggers a second, redundant `RESET ALL` round-trip on checkin.
 
 /// `SET` statement CommandComplete tag — arms the `needs_cleanup_set` flag.
 /// Returned for any `SET foo = ...`, including `SET SESSION AUTHORIZATION ...`.
 const COMMAND_COMPLETE_BY_SET: &[u8; 4] = b"SET\0";
+/// `RESET` statement CommandComplete tag — disarms `needs_cleanup_set`.
+/// PostgreSQL returns this tag both for `RESET ALL` and for `RESET foo.bar`;
+/// the per-GUC form is still safe to treat as a reset because the only state
+/// pg_doorman tracked is the `SET` flag — the next `SET` will re-arm it.
+const COMMAND_COMPLETE_BY_RESET: &[u8; 6] = b"RESET\0";
 /// `DECLARE CURSOR` CommandComplete tag — arms the `needs_cleanup_declare` flag.
 const COMMAND_COMPLETE_BY_DECLARE: &[u8; 15] = b"DECLARE CURSOR\0";
 /// `CLOSE ALL` CommandComplete tag — disarms `needs_cleanup_declare`.
@@ -49,7 +62,7 @@ const COMMAND_COMPLETE_BY_CLOSE_CURSOR_ALL: &[u8; 17] = b"CLOSE CURSOR ALL\0";
 /// `DEALLOCATE ALL` CommandComplete tag — clears prepared statement cache
 /// and disarms `needs_cleanup_prepare`.
 const COMMAND_COMPLETE_BY_DEALLOCATE_ALL: &[u8; 15] = b"DEALLOCATE ALL\0";
-/// PostgreSQL `DISCARD ALL` tag — equivalent to `RESET ALL; DEALLOCATE ALL;
+/// `DISCARD ALL` CommandComplete tag — equivalent to `RESET ALL; DEALLOCATE ALL;
 /// CLOSE ALL; UNLISTEN *; ...`, so disarms every `needs_cleanup_*` flag.
 const COMMAND_COMPLETE_BY_DISCARD_ALL: &[u8; 12] = b"DISCARD ALL\0";
 
@@ -80,11 +93,8 @@ pub(crate) async fn send_and_flush_timeout(
 
 /// Flushes messages and records write stats/activity.
 pub(crate) async fn send_and_flush(server: &mut Server, messages: &BytesMut) -> Result<(), Error> {
-    server.unsupported_feature_notice = None;
     if server.server_reset_query.is_some() {
-        // Reuse the existing dirty flags: every exchange needs the configured
-        // full reset, including queries whose session effects are not tagged.
-        server.cleanup_state.set_true();
+        server.reset_pending = true;
     }
     server.stats.data_sent(messages.len());
     server.stats.wait_writing();
@@ -396,10 +406,6 @@ fn handle_error_response(server: &mut Server, message: &mut BytesMut) {
         server.cleanup_state.needs_cleanup_prepare = true;
     }
 
-    if server.resetting {
-        return;
-    }
-
     // A Parse error means PostgreSQL did not install any pending prepared
     // statement names. Drop the optimistic LRU entries so the next Bind
     // re-Parses instead of hitting a stale DOORMAN_N.
@@ -431,17 +437,21 @@ fn handle_error_response(server: &mut Server, message: &mut BytesMut) {
 enum CommandCompleteEffect {
     /// Tag does not influence cleanup tracking (e.g. SELECT, INSERT).
     None,
-    /// `SET ...` / `RESET ...` — session GUC potentially mutated; arm cleanup.
+    /// `SET ...` — session GUC potentially mutated; arm set-cleanup.
     ArmSet,
     /// `DECLARE CURSOR` — a server-side cursor may now be open; arm declare-cleanup.
     ArmDeclare,
+    /// `RESET` / `RESET ALL` — session GUCs are back to the server defaults;
+    /// disarm set-cleanup because the subsequent checkin RESET would be a no-op.
+    DisarmSet,
     /// `CLOSE CURSOR ALL` — no server-side cursors remain; disarm declare-cleanup.
     DisarmDeclare,
     /// `DEALLOCATE ALL` — every prepared statement is gone server-side; disarm
     /// prepare-cleanup and drop the LRU so the next checkout starts from scratch.
     DisarmPrepare,
-    /// `DISCARD ALL` — drop coordinator prepared state. Complete cleanup depends
-    /// on the backend's NOTICE and the configured reset policy.
+    /// `DISCARD ALL` — equivalent to `RESET ALL; DEALLOCATE ALL; CLOSE ALL;
+    /// UNLISTEN *; ...` executed atomically; disarm every `needs_cleanup_*` flag
+    /// and drop the LRU.
     DisarmAll,
 }
 
@@ -451,8 +461,10 @@ enum CommandCompleteEffect {
 /// on length, so non-matching messages (the common case on the hot path) cost a
 /// single length comparison per arm.
 fn classify_command_complete(tag: &[u8]) -> CommandCompleteEffect {
-    if tag == COMMAND_COMPLETE_BY_SET || tag == b"RESET\0" {
+    if tag == COMMAND_COMPLETE_BY_SET {
         CommandCompleteEffect::ArmSet
+    } else if tag == COMMAND_COMPLETE_BY_RESET {
+        CommandCompleteEffect::DisarmSet
     } else if tag == COMMAND_COMPLETE_BY_DECLARE {
         CommandCompleteEffect::ArmDeclare
     } else if tag == COMMAND_COMPLETE_BY_CLOSE_CURSOR_ALL {
@@ -488,16 +500,18 @@ fn drop_prepared_statement_cache_on_reset(server: &mut Server, reason: &'static 
     }
 }
 
-/// Track confirmed session changes; internal resets commit tracking only at Idle.
+/// Handles CommandComplete ('C') message - indicates successful completion of a command.
+/// Tracks commands that may require cleanup (SET, DECLARE, ...) and disarms the
+/// cleanup flags when the session has since been restored by a RESET / DISCARD /
+/// DEALLOCATE / CLOSE ALL statement in the same or a later batch — so that the
+/// next checkin does not issue a redundant `RESET ALL` round-trip on a connection
+/// the client has already cleaned up.
 fn handle_command_complete(server: &mut Server, message: &BytesMut) {
     // Exit COPY mode if we were in it
     if server.in_copy_mode {
         server.in_copy_mode = false;
     }
 
-    if server.resetting {
-        return;
-    }
     match classify_command_complete(&message[..]) {
         CommandCompleteEffect::None => {}
         CommandCompleteEffect::ArmSet => {
@@ -505,6 +519,9 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
         }
         CommandCompleteEffect::ArmDeclare => {
             server.cleanup_state.needs_cleanup_declare = true;
+        }
+        CommandCompleteEffect::DisarmSet => {
+            server.cleanup_state.needs_cleanup_set = false;
         }
         CommandCompleteEffect::DisarmDeclare => {
             server.cleanup_state.needs_cleanup_declare = false;
@@ -514,20 +531,8 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
             drop_prepared_statement_cache_on_reset(server, "DEALLOCATE ALL");
         }
         CommandCompleteEffect::DisarmAll => {
-            // Greengage 6/7 discard coordinator prepared statements, but NOTICE
-            // 0AM01 says the reset has no clusterwide effect.
+            server.cleanup_state.reset();
             drop_prepared_statement_cache_on_reset(server, "DISCARD ALL");
-            server.server_parameters.forget_untracked();
-            if server.unsupported_feature_notice.is_some() {
-                server.cleanup_state.set_true();
-                if server.server_reset_query.is_none() {
-                    server.mark_bad(
-                        "DISCARD ALL has no complete reset; configure server_reset_query",
-                    );
-                }
-            } else if server.server_reset_query.is_none() {
-                server.cleanup_state.reset();
-            }
         }
     }
 }
@@ -857,27 +862,22 @@ where
             // Response to Execute with an empty query string
             'I' => {
                 if server.resetting {
-                    server.last_sql_error =
-                        Some(("XX000".into(), "backend reset query is empty".into()));
+                    server.last_sql_error = Some(("XX000".into(), "empty backend reset".into()));
                 }
                 if server.is_async() {
                     server.decrement_expected();
                 }
             }
 
-            'N' => {
+            'N' if server.resetting => {
                 if let Ok(notice) = PgErrorMsg::parse(&message) {
                     if matches!(notice.code.as_str(), "0A000" | "0AM01") {
-                        server.unsupported_feature_notice = Some(format!(
-                            "{}: {}",
-                            notice.code,
-                            sanitize_for_log(&notice.message)
-                        ));
+                        server.last_sql_error = Some((notice.code, notice.message));
                     }
                 }
             }
 
-            // Anything else, e.g. notifications, etc.
+            // Anything else, e.g. notices, etc.
             // Keep buffering until ReadyForQuery shows up.
             _ => (),
         };
@@ -927,12 +927,13 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_reset_tag_keeps_set_cleanup_armed() {
+    fn reset_tag_disarms_set_cleanup() {
         // PostgreSQL emits the same `RESET\0` tag for `RESET ALL` and
-        // `RESET foo.bar`; other GUCs can remain dirty in the latter case.
+        // `RESET foo.bar`; both restore GUCs to their default so either one
+        // legitimately disarms pg_doorman's heuristic flag.
         assert_eq!(
             classify_command_complete(b"RESET\0"),
-            CommandCompleteEffect::ArmSet,
+            CommandCompleteEffect::DisarmSet,
         );
     }
 
@@ -971,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn discard_all_tag_is_recognized() {
+    fn discard_all_tag_disarms_every_cleanup_flag() {
         assert_eq!(
             classify_command_complete(b"DISCARD ALL\0"),
             CommandCompleteEffect::DisarmAll,

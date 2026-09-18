@@ -71,6 +71,18 @@
 
 По умолчанию: `true`.
 
+### server_reset_query
+
+Полный SQL-сброс перед повторной выдачей backend; переопределяет `general.server_reset_query`.
+Если оба значения не заданы, сохраняется выборочная очистка.
+Требует `cleanup_server_connections = true` и непустой запрос, очищающий сессию, prepared statements,
+курсоры и другие ресурсы сессии. Открытая транзакция сначала откатывается. Несколько команд и SELECT
+поддерживаются; ошибка, NOTICE о неподдерживаемой команде, таймаут (`general.connect_timeout`)
+или незавершённая транзакция закрывают backend. Клиентский SQL не переписывается.
+RELOAD заменяет затронутые пулы; уже подключённые клиенты сохраняют прежний пул.
+Пример PostgreSQL: `server_reset_query = "DISCARD ALL"`. Для Greengage 6/7 — явная последовательность:
+`SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP;`.
+
 ### scaling_warm_pool_ratio
 
 Переопределяет глобальный scaling_warm_pool_ratio для этого пула. Если не задано, используется глобальная настройка.
@@ -363,14 +375,3 @@ users:
     server_password: "plaintext_pwd"  # пароль открытым текстом для этого пользователя
 ```
 `````
-
-## server_reset_query
-
-Необязательная строка SQL полного сброса backend. Значение пула имеет приоритет
-над `general.server_reset_query`; без обоих значений сохраняется выборочная
-очистка. Пустое значение не отключает reset. Запрос выполняется перед повторной
-выдачей использованного backend и должен сбрасывать в том числе prepared
-statements, курсоры, GUC и identity. Ошибка или неподдерживаемый reset закрывает
-backend. При RELOAD новая policy применяется к новым поколениям пулов.
-
-[Семантика, ограничения и пример для Greengage](../tutorials/greengage.md).

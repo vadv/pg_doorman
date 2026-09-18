@@ -814,41 +814,9 @@ fields:
 
     server_reset_query:
       config:
-        en: |
-          Optional full reset SQL before reusing a backend after client work.
-          Unset keeps selective cleanup. Pools may override this query.
-          Must clear session state, prepared statements and cursors; requires
-          cleanup_server_connections = true. Empty queries are rejected.
-          DISCARD ALL is a PostgreSQL example, not a Greengage reset.
-        ru: |
-          Необязательный полный SQL-сброс перед повторным использованием backend.
-          Если не задан, используется выборочная очистка. Можно переопределить в пуле.
-          Должен очищать состояние сессии, prepared statements и курсоры; требует
-          cleanup_server_connections = true. Пустые запросы запрещены.
-          DISCARD ALL — пример для PostgreSQL, а не сброс для Greengage.
-      doc: |
-        Optional SQL executed before a backend is reused after client work. A pool's
-        `server_reset_query` overrides this default. When unset at both levels, pg_doorman
-        keeps its selective `RESET ROLE`, `RESET ALL`, `DEALLOCATE ALL`, and `CLOSE ALL` cleanup.
-
-        The custom query must restore session defaults and release prepared statements,
-        cursors, and any other session resources your application uses. Open transactions
-        are rolled back separately before it runs. Multiple statements and SELECT results
-        are supported; pg_doorman drains all responses and requires an idle backend after
-        successful completion. Reset failures close the backend instead of reusing it.
-        Successful full resets also invalidate the backend prepared-statement cache.
-
-        `server_reset_query = "DISCARD ALL"` is an example for PostgreSQL. Greengage's
-        `DISCARD ALL` does not reset segment sessions; use a reset sequence verified against
-        your Greengage version and workload. This setting does not rewrite client SQL:
-        configure the application's connection pool reset query separately.
-
-        Empty, whitespace-only, semicolon-only, and NUL-containing queries are rejected.
-        All pools with an effective custom query must have `cleanup_server_connections = true`.
-        Changing either level on reload replaces affected pools. Existing client connections can
-        retain the previous pool and policy; reconnect/drain them to complete the change.
-        See [Greengage and backend reset](../tutorials/greengage.md) for the tested recipe,
-        `general.connect_timeout` bound and compatibility limits.
+        en: "Default full reset SQL; pools may override. Unset keeps selective cleanup."
+        ru: "Полный SQL-сброс по умолчанию; можно переопределить в пуле. Если не задан — выборочная очистка."
+      doc: "Default [server_reset_query](pool.md#server_reset_query) for all pools. A pool value overrides it; when both are unset, selective cleanup is unchanged."
       default: "None (selective cleanup)"
 
     message_size_to_be_stream:
@@ -1419,20 +1387,23 @@ fields:
     server_reset_query:
       config:
         en: |
-          Override general.server_reset_query for this pool. Unset inherits the
-          general query; when both are unset, use selective cleanup.
-          Requires cleanup_server_connections = true. Empty queries are rejected.
-          DISCARD ALL is a PostgreSQL example, not a Greengage reset.
+          Full reset SQL before backend reuse; unset inherits general.server_reset_query.
+          Must clear session state, prepared statements and cursors; requires cleanup_server_connections.
+          Failed resets close the backend. Client SQL is not rewritten.
         ru: |
-          Переопределить general.server_reset_query для этого пула. Если не задан,
-          наследуется общий запрос; если оба не заданы, используется выборочная очистка.
-          Требует cleanup_server_connections = true. Пустые запросы запрещены.
-          DISCARD ALL — пример для PostgreSQL, а не сброс для Greengage.
+          Полный SQL-сброс перед повторной выдачей backend; по умолчанию general.server_reset_query.
+          Должен очищать сессию, prepared statements и курсоры; требует cleanup_server_connections.
+          При неудачном сбросе backend закрывается. Клиентский SQL не переписывается.
       doc: |
-        Override [`general.server_reset_query`](general.md#server_reset_query) for this pool.
-        Omit to inherit the general setting. When neither level sets a query, selective
-        cleanup remains the default. Empty strings do not disable cleanup and are rejected.
-        An effective custom query requires `cleanup_server_connections = true`.
+        Full reset before backend reuse; overrides `general.server_reset_query`.
+        When both are unset, selective cleanup is unchanged.
+        Requires `cleanup_server_connections = true` and nonempty SQL that restores session defaults
+        and releases prepared statements, cursors and other session resources. Open transactions are
+        rolled back first. Multiple statements and SELECT results are supported. Failure, unsupported
+        command notices or a non-idle result close the backend; execution is bounded by `general.connect_timeout`.
+        Client SQL is not rewritten. RELOAD replaces affected pools; existing clients retain their old pool.
+        PostgreSQL example: `server_reset_query = "DISCARD ALL"`. For Greengage 6/7 use the explicit sequence:
+        `SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP;`.
       default: "None (uses global setting)"
 
     cleanup_server_connections:
@@ -1440,19 +1411,18 @@ fields:
         en: |
           Reset session state (SET, prepared statements, cursors) when returning a connection to pool.
           ROLLBACK for open transactions is always executed regardless of this setting.
-          With cleanup disabled, a backend with tracked dirty state is closed instead of reused.
+          Prevents state leaking between clients in transaction mode.
         ru: |
           Сбрасывать состояние сессии (SET, prepared statements, курсоры) при возврате соединения в пул.
           ROLLBACK для открытых транзакций выполняется всегда независимо от этой настройки.
-          При отключённой очистке backend с известным изменённым состоянием закрывается.
+          Предотвращает утечку состояния между клиентами в транзакционном режиме.
       doc: |
         Controls whether pg_doorman resets session state when a connection is returned to the pool.
-        When enabled, the session was modified, and no `server_reset_query` is set, pg_doorman sends
-        `RESET ROLE`, plus conditionally
+        When enabled and the session was modified, pg_doorman sends: `RESET ROLE`, plus conditionally
         `RESET ALL` (if SET was used), `DEALLOCATE ALL` (if PREPARE was used), `CLOSE ALL` (if cursors
         were opened). Note: `ROLLBACK` for open transactions is always executed regardless of this setting.
-        With cleanup disabled, backends with tracked dirty state are closed instead of reused.
-        A configured or inherited `server_reset_query` requires cleanup to remain enabled.
+        Disable only if your application never uses SET, prepared statements, or cursors and you want
+        to save the cleanup roundtrip.
       default: "true"
 
     prepared_statements_cache_size:
