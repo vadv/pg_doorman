@@ -54,7 +54,9 @@ Greengage 6.31.0 and 7.5.0 emit `NOTICE 0AM01` for `DISCARD ALL`, then clean
 coordinator state, including prepared statements. They do **not** dispatch the
 full operation to segments. A successful command tag does not prove clusterwide
 cleanup. pg_doorman invalidates the coordinator prepared cache and retains the
-need for cleanup; without a configured reset it retires that backend and can terminate the client connection.
+need for cleanup; without a configured reset it retires that backend on release.
+In transaction mode the completed response is delivered and the next query uses
+another backend. This does not make DISCARD a clusterwide reset within a session.
 
 Client SQL stays backend-native in both simple and extended protocol. Configure
 client/driver reset SQL separately if it uses `DISCARD ALL`: the query above is

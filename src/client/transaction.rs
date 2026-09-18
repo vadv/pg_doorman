@@ -1265,7 +1265,10 @@ where
                 let shutdown_in_progress = SHUTDOWN_IN_PROGRESS.load(Ordering::Relaxed);
                 if shutdown_in_progress {
                     server.mark_bad("graceful shutdown - releasing server connection");
-                } else if !server.is_async() {
+                } else if !server.is_async() && !server.is_bad() {
+                    // An async SQL error may retire the backend before Sync.
+                    // Let it drop without cleanup so the completed response is
+                    // still delivered below; a bad backend cannot be reused.
                     server.checkin_cleanup().await?;
                 }
                 if self.transaction_mode {
