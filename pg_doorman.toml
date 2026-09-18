@@ -244,11 +244,7 @@ server_round_robin = false
 # Default: false
 sync_server_parameters = false
 
-# Optional full reset SQL before reusing a backend after client work.
-# Unset keeps selective cleanup. Pools may override this query.
-# Must clear session state, prepared statements and cursors; requires
-# cleanup_server_connections = true. Empty queries are rejected.
-# DISCARD ALL is a PostgreSQL example, not a Greengage reset.
+# Default full reset SQL; pools may override. Unset keeps selective cleanup.
 # Default: None (selective cleanup)
 # server_reset_query = "DISCARD ALL"
 
@@ -568,14 +564,13 @@ pool_mode = "transaction"
 
 # Reset session state (SET, prepared statements, cursors) when returning a connection to pool.
 # ROLLBACK for open transactions is always executed regardless of this setting.
-# With cleanup disabled, a backend with tracked dirty state is closed instead of reused.
+# Prevents state leaking between clients in transaction mode.
 # Default: true
 cleanup_server_connections = true
 
-# Override general.server_reset_query for this pool. Unset inherits the
-# general query; when both are unset, use selective cleanup.
-# Requires cleanup_server_connections = true. Empty queries are rejected.
-# DISCARD ALL is a PostgreSQL example, not a Greengage reset.
+# Full reset SQL before backend reuse; unset inherits general.server_reset_query.
+# Must clear session state, prepared statements and cursors; requires cleanup_server_connections.
+# Failed resets close the backend. Client SQL is not rewritten.
 # Default: None (uses global setting)
 # server_reset_query = "DISCARD ALL"
 

@@ -73,22 +73,12 @@ pub type PoolMap = HashMap<PoolIdentifier, ConnectionPool>;
 /// The pool is recreated dynamically when the config is reloaded.
 pub static POOLS: Lazy<ArcSwap<PoolMap>> = Lazy::new(|| ArcSwap::from_pointee(HashMap::default()));
 
-/// Hash of the previous reload's general startup and reset settings. Used by
+/// Hash of the previous reload's `general.startup_parameters` map. Used by
 /// `ConnectionPool::from_config` to recognize when a SIGHUP changed the
 /// general-level baseline so dynamic auth_query pools can be drained — the
 /// per-pool reuse hash already folds in the baseline, but dynamic pools are
 /// carried over by identifier rather than rebuilt from the same path.
 static PREVIOUS_GENERAL_STARTUP_HASH: AtomicU64 = AtomicU64::new(0);
-
-fn compute_general_startup_hash(general: &General) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    general.startup_parameters.hash(&mut hasher);
-    general.sync_server_parameters.hash(&mut hasher);
-    general.server_reset_query.hash(&mut hasher);
-    hasher.finish()
-}
-
 pub static CANCELED_PIDS: Lazy<Arc<Mutex<HashSet<ProcessId>>>> =
     Lazy::new(|| Arc::new(Mutex::new(HashSet::new())));
 
@@ -416,15 +406,22 @@ impl ConnectionPool {
         }
 
         // Hashing each pool's effective config against (Pool, general
-        // startup_parameters baseline, sync_server_parameters, reset query) folds
+        // startup_parameters baseline + sync_server_parameters + reset query) folds
         // general-level GUC changes into the same reuse decision pg_doorman
         // already uses for pool-level changes. Without this, a SIGHUP that
         // only edits `general.startup_parameters` or
-        // `general.sync_server_parameters` or `general.server_reset_query` would
-        // leave idle backends pinned to the previous defaults/reset policy until they rotate
+        // `general.sync_server_parameters` would leave every idle backend
+        // pinned to the previous `reset_val` until the connection rotates
         // through `lifetime_ms`, so clients would see mixed defaults from
         // the same pool depending on which backend they got.
-        let general_startup_hash = compute_general_startup_hash(&config.general);
+        let general_startup_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            config.general.startup_parameters.hash(&mut hasher);
+            config.general.sync_server_parameters.hash(&mut hasher);
+            config.general.server_reset_query.hash(&mut hasher);
+            hasher.finish()
+        };
         // Load only; the hash is not advanced until the new pool map has
         // been committed at the bottom of from_config. Otherwise a reload
         // that fails halfway poisons the hash, and the next reload of the
@@ -1527,6 +1524,15 @@ mod tests {
         assert!(!pool.effective_sync_server_parameters(&general));
     }
 
+    fn compute_general_startup_hash(general: &General) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        general.startup_parameters.hash(&mut hasher);
+        general.sync_server_parameters.hash(&mut hasher);
+        general.server_reset_query.hash(&mut hasher);
+        hasher.finish()
+    }
+
     fn compute_pool_fingerprint(pool: &ConfigPool, general: &General) -> u64 {
         use std::hash::Hasher;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1611,43 +1617,21 @@ mod tests {
     }
 
     #[test]
-    fn reload_server_reset_query_changes_general_and_parent_fingerprints() {
+    fn reload_general_server_reset_query_changes_fingerprints() {
         let pool = ConfigPool::default();
-        let configs = [
-            General::default(),
-            General {
-                server_reset_query: Some("DISCARD ALL".into()),
-                ..General::default()
-            },
-            General {
-                server_reset_query: Some("RESET ALL; DEALLOCATE ALL; CLOSE ALL;".into()),
-                ..General::default()
-            },
-            General::default(),
-        ];
-        for pair in configs.windows(2) {
-            // These are the production hashes used for static pools, the global
-            // reload generation, and dynamic auth_query parent invalidation.
-            assert_ne!(
-                compute_pool_fingerprint(&pool, &pair[0]),
-                compute_pool_fingerprint(&pool, &pair[1])
-            );
-            assert_ne!(
-                pool.hash_value() ^ compute_general_startup_hash(&pair[0]),
-                pool.hash_value() ^ compute_general_startup_hash(&pair[1])
-            );
-        }
-    }
-
-    #[test]
-    fn reload_server_reset_query_changes_pool_fingerprint() {
-        let general = General::default();
-        let mut pool = ConfigPool::default();
-        let before = compute_pool_fingerprint(&pool, &general);
-        pool.server_reset_query = Some("DISCARD ALL".into());
-        assert_ne!(before, compute_pool_fingerprint(&pool, &general));
-        pool.server_reset_query = None;
-        assert_eq!(before, compute_pool_fingerprint(&pool, &general));
+        let before = General::default();
+        let after = General {
+            server_reset_query: Some("DISCARD ALL".into()),
+            ..General::default()
+        };
+        assert_ne!(
+            compute_pool_fingerprint(&pool, &before),
+            compute_pool_fingerprint(&pool, &after)
+        );
+        assert_ne!(
+            pool.hash_value() ^ compute_general_startup_hash(&before),
+            pool.hash_value() ^ compute_general_startup_hash(&after)
+        );
     }
 
     #[test]

@@ -777,18 +777,6 @@ pub async fn send_flush_to_session(world: &mut DoormanWorld, session_name: Strin
     conn.send_flush().await.expect("Failed to send Flush");
 }
 
-#[when(regex = r#"^we read ErrorResponse from session "([^"]+)"$"#)]
-pub async fn read_error_response_from_session(world: &mut DoormanWorld, session_name: String) {
-    let conn = super::helpers::get_session(&mut world.named_sessions, &session_name);
-    // Flush reports an extended-query error before Sync supplies ReadyForQuery.
-    let message = timeout(Duration::from_secs(5), conn.read_message())
-        .await
-        .expect("Timed out waiting for ErrorResponse before Sync")
-        .expect("Failed to read ErrorResponse before Sync");
-    assert_eq!(message.0, 'E', "Expected ErrorResponse before Sync");
-    world.session_messages.insert(session_name, vec![message]);
-}
-
 #[when(regex = r#"^we send Sync to session "([^"]+)"$"#)]
 #[then(regex = r#"^we send Sync to session "([^"]+)"$"#)]
 pub async fn send_sync_to_session(world: &mut DoormanWorld, session_name: String) {

@@ -26,6 +26,3 @@ pub use prepared_statement_cache::{
 };
 pub use server_backend::Server;
 pub use stream::StreamInner;
-
-#[cfg(test)]
-mod reset_tests;

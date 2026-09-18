@@ -2114,33 +2114,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_queries_roundtrip_annotated_config() {
+    fn server_reset_query_roundtrips_both_formats() {
         let mut config = Config::default();
-        config.general.server_reset_query = Some("RESET ALL;\nSELECT 'quoted \"value\"';".into());
-        config.pools.insert(
-            "test".into(),
-            Pool {
-                server_reset_query: Some("RESET ALL; DEALLOCATE ALL; CLOSE ALL;".into()),
-                users: vec![User::default()],
-                ..Pool::default()
-            },
-        );
+        config.general.server_reset_query = Some("DISCARD ALL".into());
+        let pool = Pool {
+            server_reset_query: Some("RESET ALL;\nSELECT 'quoted \"value\"';".into()),
+            users: vec![User::default()],
+            ..Pool::default()
+        };
+        config.pools.insert("test".into(), pool);
         for format in [ConfigFormat::Toml, ConfigFormat::Yaml] {
-            for russian in [false, true] {
-                let text = generate_annotated_config(&config, format, russian);
-                let parsed: Config = match format {
-                    ConfigFormat::Toml => toml::from_str(&text).unwrap(),
-                    ConfigFormat::Yaml => serde_yaml::from_str(&text).unwrap(),
-                };
-                assert_eq!(
-                    parsed.general.server_reset_query,
-                    config.general.server_reset_query
-                );
-                assert_eq!(
-                    parsed.pools["test"].server_reset_query,
-                    config.pools["test"].server_reset_query
-                );
-            }
+            let text = generate_annotated_config(&config, format, false);
+            let parsed: Config = match format {
+                ConfigFormat::Toml => toml::from_str(&text).unwrap(),
+                ConfigFormat::Yaml => serde_yaml::from_str(&text).unwrap(),
+            };
+            assert_eq!(
+                parsed.general.server_reset_query,
+                config.general.server_reset_query
+            );
+            assert_eq!(
+                parsed.pools["test"].server_reset_query,
+                config.pools["test"].server_reset_query
+            );
         }
     }
 

@@ -141,8 +141,7 @@ pub struct General {
     #[serde(default = "General::default_sync_server_parameters")] // False
     pub sync_server_parameters: bool,
 
-    /// Optional full session cleanup query. Pools may override this; unset keeps
-    /// the selective cleanup sequence. Runs before a backend is reused.
+    /// Default full reset query; pools may override it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_reset_query: Option<String>,
 
