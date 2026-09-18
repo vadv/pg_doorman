@@ -518,7 +518,11 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
             server.cleanup_state.needs_cleanup_declare = true;
         }
         CommandCompleteEffect::DisarmSet => {
-            server.cleanup_state.needs_cleanup_set = false;
+            // RESET has the same tag for one GUC and ALL. Keep the configured
+            // cleanup obligation until our own complete batch succeeds.
+            if !server.custom_cleanup_enabled() || server.resetting {
+                server.cleanup_state.needs_cleanup_set = false;
+            }
         }
         CommandCompleteEffect::DisarmDeclare => {
             server.cleanup_state.needs_cleanup_declare = false;
@@ -530,6 +534,11 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
         CommandCompleteEffect::DisarmAll => {
             server.cleanup_state.reset();
             drop_prepared_statement_cache_on_reset(server, "DISCARD ALL");
+            // A fork may complete DISCARD locally only, even with notices muted.
+            // Honour the configured cleanup while preserving native cache invalidation.
+            if server.custom_cleanup_enabled() && !server.resetting {
+                server.cleanup_state.needs_cleanup_set = true;
+            }
         }
     }
 }
@@ -858,8 +867,19 @@ where
             // EmptyQueryResponse
             // Response to Execute with an empty query string
             'I' => {
+                if server.resetting {
+                    server.last_sql_error = Some(("XX000".into(), "empty backend reset".into()));
+                }
                 if server.is_async() {
                     server.decrement_expected();
+                }
+            }
+
+            'N' if server.resetting => {
+                if let Ok(notice) = PgErrorMsg::parse(&message) {
+                    if matches!(notice.code.as_str(), "0A000" | "0AM01") {
+                        server.last_sql_error = Some((notice.code, notice.message));
+                    }
                 }
             }
 
