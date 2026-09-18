@@ -230,6 +230,7 @@ fn write_general_fields(out: &mut String, f: &FieldsData) {
         "server_idle_check_timeout",
         "server_round_robin",
         "sync_server_parameters",
+        "server_reset_query",
         "tcp_so_linger",
         "tcp_no_delay",
         "tcp_keepalives_count",
@@ -294,6 +295,7 @@ fn write_pool_fields(out: &mut String, f: &FieldsData) {
         "reserve_pool_timeout",
         "min_guaranteed_pool_size",
         "sync_server_parameters",
+        "server_reset_query",
         "startup_parameters",
     ];
 

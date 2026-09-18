@@ -2202,3 +2202,129 @@ pool_size = 10
     let pool = &config.pools["mydb"];
     assert_eq!(pool.sync_server_parameters, None);
 }
+
+#[tokio::test]
+async fn server_reset_query_defaults_and_overrides_in_both_formats() {
+    for (format, content) in [
+        (
+            ConfigFormat::Toml,
+            r#"
+[general]
+admin_username = "admin"
+admin_password = "admin"
+[pools.p]
+"#,
+        ),
+        (
+            ConfigFormat::Yaml,
+            r#"
+general:
+  admin_username: admin
+  admin_password: admin
+pools:
+  p: {}
+"#,
+        ),
+    ] {
+        let mut config: Config = parse_config_content(content, format).unwrap();
+        config.validate().await.unwrap();
+        assert_eq!(config.general.server_reset_query, None);
+        assert_eq!(config.pools["p"].server_reset_query, None);
+        assert_eq!(
+            config.pools["p"].effective_server_reset_query(&config.general),
+            None
+        );
+        config.general.server_reset_query = Some("DISCARD ALL".into());
+        assert_eq!(
+            config.pools["p"].effective_server_reset_query(&config.general),
+            Some("DISCARD ALL")
+        );
+        config.pools.get_mut("p").unwrap().server_reset_query =
+            Some("RESET ALL; DEALLOCATE ALL; CLOSE ALL;".into());
+        assert_eq!(
+            config.pools["p"].effective_server_reset_query(&config.general),
+            Some("RESET ALL; DEALLOCATE ALL; CLOSE ALL;")
+        );
+        // Both serializers must preserve the independently configured queries.
+        let reparsed: Config = match format {
+            ConfigFormat::Toml => toml::from_str(&toml::to_string(&config).unwrap()).unwrap(),
+            ConfigFormat::Yaml => {
+                serde_yaml::from_str(&serde_yaml::to_string(&config).unwrap()).unwrap()
+            }
+        };
+        assert_eq!(
+            reparsed.general.server_reset_query,
+            config.general.server_reset_query
+        );
+        assert_eq!(
+            reparsed.pools["p"].server_reset_query,
+            config.pools["p"].server_reset_query
+        );
+        config.validate().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn server_reset_query_rejects_empty_and_protocol_truncation() {
+    for query in ["", " \t\n", "; ;\n;", "RESET ALL;\0DEALLOCATE ALL"] {
+        for pool_level in [false, true] {
+            let mut config = Config::default();
+            let setting = if pool_level {
+                config.pools.insert(
+                    "p".into(),
+                    Pool {
+                        server_reset_query: Some(query.into()),
+                        ..Pool::default()
+                    },
+                );
+                "pool.server_reset_query"
+            } else {
+                config.general.server_reset_query = Some(query.into());
+                "general.server_reset_query"
+            };
+            let error = config.validate().await.unwrap_err();
+            assert!(
+                matches!(error, Error::BadConfig(ref message) if message.contains(setting)),
+                "{error:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn server_reset_query_requires_cleanup_for_inherited_and_pool_queries() {
+    for pool_level in [false, true] {
+        let mut config = Config::default();
+        let mut pool = Pool {
+            cleanup_server_connections: false,
+            ..Pool::default()
+        };
+        if pool_level {
+            pool.server_reset_query = Some("DISCARD ALL".into());
+        } else {
+            config.general.server_reset_query = Some("DISCARD ALL".into());
+        }
+        config.pools.insert("p".into(), pool);
+        let error = config.validate().await.unwrap_err();
+        assert!(
+            matches!(error, Error::BadConfig(ref message) if message.contains("pools.p.server_reset_query") && message.contains("cleanup_server_connections")),
+            "{error:?}"
+        );
+        config
+            .pools
+            .get_mut("p")
+            .unwrap()
+            .cleanup_server_connections = true;
+        config.validate().await.unwrap();
+    }
+    // The legacy disabled setting remains valid when no reset query is configured.
+    let mut config = Config::default();
+    config.pools.insert(
+        "p".into(),
+        Pool {
+            cleanup_server_connections: false,
+            ..Pool::default()
+        },
+    );
+    config.validate().await.unwrap();
+}

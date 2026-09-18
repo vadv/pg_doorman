@@ -28,6 +28,7 @@
 # Пулинг
 
 - [Режимы пула](concepts/pool-modes.md)
+- [Greengage и очистка backend](tutorials/greengage.md)
 - [Координатор пулов](concepts/pool-coordinator.md)
 - [Кеш Parse для анонимных prepared statements](tutorials/prepared-statements.md)
 - [Параметры запуска PostgreSQL](tutorials/startup-parameters.md)

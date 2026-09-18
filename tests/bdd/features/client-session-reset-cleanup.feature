@@ -1,28 +1,12 @@
 @rust @rust-3 @client-session-reset-cleanup
-Feature: Client session reset batch suppresses doorman-side cleanup
-  When a client (e.g. jackc/pgx on an internal context deadline) keeps the
-  server connection alive by running a self-cleanup batch such as
+Feature: Client reset commands preserve safe backend cleanup tracking
+  PostgreSQL uses the same RESET command tag for RESET ALL and RESET one_guc.
+  pg_doorman must conservatively retain SET cleanup after either tag so that
+  resetting one setting cannot leak another setting to the next client.
+  Unambiguous DISCARD ALL and CLOSE ALL tags can still suppress their cleanup.
 
-      SET SESSION AUTHORIZATION DEFAULT;
-      RESET ALL;
-      CLOSE ALL;
-      UNLISTEN *;
-      SELECT pg_advisory_unlock_all();
-      DISCARD PLANS;
-      DISCARD SEQUENCES;
-      DISCARD TEMP;
-
-  pg_doorman must recognise that the session is already clean and skip the
-  checkin-time `RESET ROLE; RESET ALL; ...` round-trip it would otherwise send.
-  Without this recognition every dangling client query triples the traffic to
-  PostgreSQL: the original (stuck) query, the client's self-reset batch, and a
-  redundant pg_doorman reset.
-
-  Each scenario starts PostgreSQL with `log_statement = 'all'` and asserts the
-  absence or presence of pg_doorman's cleanup statements in the server log.
-  The `RESET ROLE` prefix is used as a marker because pg_doorman always prefixes
-  its cleanup batch with `RESET ROLE;` and clients from the real world do not
-  issue it.
+  Each scenario logs SQL on PostgreSQL. RESET ROLE identifies pg_doorman's
+  selective cleanup batch.
 
   Background:
     Given PostgreSQL started with options "-c log_statement=all -c logging_collector=off" and pg_hba.conf:
@@ -50,7 +34,7 @@ Feature: Client session reset batch suppresses doorman-side cleanup
       [[pools.example_db.users]]
       username = "example_user_1"
       password = ""
-      pool_size = 2
+      pool_size = 1
 
       [pools.example_db_session]
       server_host = "127.0.0.1"
@@ -61,11 +45,11 @@ Feature: Client session reset batch suppresses doorman-side cleanup
       [[pools.example_db_session.users]]
       username = "example_user_1"
       password = ""
-      pool_size = 2
+      pool_size = 1
       """
 
   @client-session-reset-cleanup-pgx-batch
-  Scenario: pgx-style session reset batch does not trigger a second server cleanup
+  Scenario: pgx-style session reset batch conservatively retains SET cleanup
     When we create session "one" to pg_doorman as "example_user_1" with password "" and database "example_db"
     # Warm the pool with a trivial query so that server auth and any startup
     # chatter is already in the log before we start asserting on it.
@@ -75,16 +59,15 @@ Feature: Client session reset batch suppresses doorman-side cleanup
     # Exactly the batch jackc/pgx emits on an internal context deadline.
     And we send SimpleQuery "SET SESSION AUTHORIZATION DEFAULT; RESET ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP" to session "one"
     And we sleep 300ms
-    # Client batch itself still shows up once — that is the one we expect.
-    Then PostgreSQL log should contain exactly 1 occurrences of "RESET ALL"
-    # pg_doorman's checkin cleanup would have prefixed its batch with RESET ROLE.
-    # Its absence proves the second cleanup was suppressed.
-    And PostgreSQL log should not contain "RESET ROLE"
+    # RESET's ambiguous command tag cannot prove that every GUC was reset.
+    # The client batch and the conservative checkin cleanup each reset GUCs.
+    Then PostgreSQL log should contain exactly 2 occurrences of "RESET ALL"
+    And PostgreSQL log should contain "RESET ROLE"
 
   @client-session-reset-cleanup-real-set-still-cleans
   Scenario: a genuine SET still arms the checkin cleanup
     # Baseline: if the client actually mutates session state and does not
-    # follow up with RESET/DISCARD, pg_doorman must still clean up on checkin.
+    # follow up with DISCARD ALL, pg_doorman must still clean up on checkin.
     # This guards against the fix over-correcting and swallowing real cleanups.
     When we create session "two" to pg_doorman as "example_user_1" with password "" and database "example_db"
     And we send SimpleQuery "SELECT 1" to session "two"
@@ -139,23 +122,23 @@ Feature: Client session reset batch suppresses doorman-side cleanup
     And PostgreSQL log should not contain "RESET ROLE"
 
   @client-session-reset-cleanup-per-guc-reset
-  Scenario: Per-GUC RESET disarms set-cleanup
-    # PostgreSQL returns the same `RESET` tag for `RESET ALL` and `RESET foo`,
-    # so a per-GUC RESET after a SET on the same GUC leaves the session clean
-    # as far as pg_doorman is concerned. Documents the intentional trade-off:
-    # `SET a=1; SET b=2; RESET a;` would also be treated as clean, because
-    # pg_doorman only tracks a single cleanup bit and cannot distinguish which
-    # GUCs are still modified.
+  Scenario: Resetting one GUC does not leak another GUC to the next client
     When we create session "five" to pg_doorman as "example_user_1" with password "" and database "example_db_session"
-    And we send SimpleQuery "SELECT 1" to session "five"
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "five" and store backend_pid
     And we sleep 100ms
     When we truncate PostgreSQL log
     And we send SimpleQuery "SET statement_timeout = 1000" to session "five"
-    And we send SimpleQuery "RESET statement_timeout" to session "five"
+    And we send SimpleQuery "RESET lock_timeout" to session "five"
     And we close session "five"
     And we sleep 300ms
-    Then PostgreSQL log should contain "RESET statement_timeout"
-    And PostgreSQL log should not contain "RESET ROLE"
+    Then PostgreSQL log should contain "RESET lock_timeout"
+    And PostgreSQL log should contain "RESET ROLE"
+    When we create session "next" to pg_doorman as "example_user_1" with password "" and database "example_db_session"
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "next" and store backend_pid
+    Then backend_pid from session "next" should equal backend_pid from session "five"
+    When we send SimpleQuery "SHOW statement_timeout" to session "next" and store response
+    Then session "next" should receive DataRow with "0"
+    And session "next" should receive ReadyForQuery "I"
 
   @client-session-reset-cleanup-single-close-keeps-armed
   Scenario: Closing one named cursor does not disarm declare-cleanup

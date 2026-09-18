@@ -111,6 +111,13 @@ pub struct Server {
     /// before returning them to the pool. If false, discard dirty connections instead.
     cleanup_connections: bool,
 
+    /// Full operator-supplied reset; None preserves selective cleanup.
+    pub(crate) server_reset_query: Option<String>,
+    /// Suppress optimistic CommandComplete effects until the reset reaches Idle.
+    pub(crate) resetting: bool,
+    /// Unsupported-feature NOTICE received in the current exchange.
+    pub(crate) unsupported_feature_notice: Option<String>,
+
     /// Configuration flag: if true, log when server parameters change for debugging purposes.
     pub(crate) log_client_parameter_status_changes: bool,
 
@@ -209,6 +216,10 @@ impl Server {
                 Err(err) => return Err(err),
             }
 
+            if self.in_copy_mode {
+                self.mark_bad("internal query entered COPY mode");
+                return Err(Error::QueryError("internal query entered COPY mode".into()));
+            }
             if !self.data_available {
                 break;
             }
@@ -397,6 +408,9 @@ impl Server {
     /// Perform any necessary cleanup before putting the server
     /// connection back in the pool
     pub async fn checkin_cleanup(&mut self) -> Result<(), Error> {
+        if self.bad {
+            return Err(Error::QueryError("cannot reuse a bad backend".into()));
+        }
         self.pending_large_message = None;
         if self.in_copy_mode() {
             warn!(
@@ -440,7 +454,7 @@ impl Server {
                 "[{}@{}] server returned in transaction, rolling back pid={}",
                 self.address.username, self.address.pool_name, self.process_id
             );
-            self.small_simple_query("ROLLBACK").await?;
+            self.run_reset_query("ROLLBACK").await?;
         }
 
         // If the client added prepared statements to the cache but disconnected
@@ -448,7 +462,6 @@ impl Server {
         // PostgreSQL. Force DEALLOCATE ALL to re-synchronize.
         if self.has_pending_cache_entries {
             self.cleanup_state.needs_cleanup_prepare = true;
-            self.has_pending_cache_entries = false;
         }
 
         // If eviction Closes were deferred but never sent (client disconnected
@@ -456,7 +469,6 @@ impl Server {
         // cleans up both the deferred entries and any other stale state.
         if !self.deferred_eviction_closes.is_empty() {
             self.cleanup_state.needs_cleanup_prepare = true;
-            self.deferred_eviction_closes.clear();
         }
 
         // Client disconnected but it performed session-altering operations such as
@@ -464,42 +476,80 @@ impl Server {
         // to avoid leaking state between clients. For performance reasons we only
         // send `RESET ALL` if we think the session is altered instead of just sending
         // it before each checkin.
-        if self.cleanup_state.needs_cleanup() && self.cleanup_connections {
+        if self.cleanup_state.needs_cleanup() {
+            if !self.cleanup_connections {
+                self.mark_bad("session cleanup disabled for dirty backend");
+                return Err(Error::QueryError(
+                    "session cleanup disabled for dirty backend".into(),
+                ));
+            }
             info!(
                 "[{}@{}] session state cleanup pid={}: {}",
                 self.address.username, self.address.pool_name, self.process_id, self.cleanup_state
             );
-            let mut reset_string = String::from("RESET ROLE;");
-
-            if self.cleanup_state.needs_cleanup_set {
-                reset_string.push_str("RESET ALL;");
-            };
-
-            if self.cleanup_state.needs_cleanup_prepare {
-                reset_string.push_str("DEALLOCATE ALL;");
-            };
-
-            if self.cleanup_state.needs_cleanup_declare {
-                reset_string.push_str("CLOSE ALL;");
-            };
-
-            self.small_simple_query(&reset_string).await?;
-            if self.cleanup_state.needs_cleanup_prepare {
-                // flush prepared.
-                self.registering_prepared_statement.clear();
-                if self.prepared_statement_cache.is_some() {
-                    let cache_size = self.prepared_statement_cache.as_ref().unwrap().len();
-                    info!(
-                        "[{}@{}] clearing prepared statement cache pid={}: session state reset ({} entries)",
-                        self.address.username, self.address.pool_name, self.process_id, cache_size
-                    );
-                    self.prepared_statement_cache.as_mut().unwrap().clear();
+            let full_reset = self.server_reset_query.is_some();
+            let reset_gucs = full_reset || self.cleanup_state.needs_cleanup_set;
+            let reset_prepared = full_reset || self.cleanup_state.needs_cleanup_prepare;
+            let reset_string = self.server_reset_query.clone().unwrap_or_else(|| {
+                let mut query = String::from("RESET ROLE;");
+                if self.cleanup_state.needs_cleanup_set {
+                    query.push_str("RESET ALL;");
                 }
+                if self.cleanup_state.needs_cleanup_prepare {
+                    query.push_str("DEALLOCATE ALL;");
+                }
+                if self.cleanup_state.needs_cleanup_declare {
+                    query.push_str("CLOSE ALL;");
+                }
+                query
+            });
+            self.run_reset_query(&reset_string).await?;
+            if reset_prepared {
+                self.registering_prepared_statement.clear();
+                self.has_pending_cache_entries = false;
+                self.deferred_eviction_closes.clear();
+                if let Some(cache) = self.prepared_statement_cache.as_mut() {
+                    cache.clear();
+                }
+            }
+            if reset_gucs {
+                // RESET ALL does not report most GUCs via ParameterStatus.
+                // Forget the checkout SET snapshot so the next client replays it.
+                self.server_parameters.forget_untracked();
+            } else {
+                // The selective batch always includes RESET ROLE.
+                self.server_parameters.remove_param("role");
             }
             self.cleanup_state.reset();
         }
-        self.in_transaction = false;
-        self.in_copy_mode = false;
+        Ok(())
+    }
+
+    /// A reset is reusable only after a complete, supported exchange ending Idle.
+    /// Keep `bad` armed across await points so cancellation also retires the backend.
+    async fn run_reset_query(&mut self, query: &str) -> Result<(), Error> {
+        self.bad = true;
+        self.resetting = true;
+        self.set_async_mode(false);
+        self.reset_expected_responses();
+        let result = tokio::time::timeout(
+            get_config().general.connect_timeout.as_std(),
+            self.small_simple_query(query),
+        )
+        .await;
+        self.resetting = false;
+        result.map_err(|_| Error::QueryError("backend reset timed out".into()))??;
+        if let Some(notice) = &self.unsupported_feature_notice {
+            return Err(Error::QueryError(format!(
+                "backend reset is unsupported: {notice}"
+            )));
+        }
+        if self.in_transaction || self.in_copy_mode || self.data_available {
+            return Err(Error::QueryError(
+                "backend reset did not finish Idle".into(),
+            ));
+        }
+        self.bad = false;
         Ok(())
     }
 
@@ -754,9 +804,10 @@ impl Server {
                     }
                 }
             }
+            self.cleanup_state.reset();
+        } else {
+            self.mark_bad("backend parameter synchronization failed");
         }
-
-        self.cleanup_state.reset();
 
         res
     }
@@ -804,6 +855,7 @@ impl Server {
         client_server_map: ClientServerMap,
         stats: Arc<ServerStats>,
         cleanup_connections: bool,
+        server_reset_query: Option<String>,
         log_client_parameter_status_changes: bool,
         server_prepared_statement_cache_size: usize,
         application_name: String,
@@ -1108,6 +1160,9 @@ impl Server {
                         application_name,
                         last_activity: SystemTime::now(),
                         cleanup_connections,
+                        server_reset_query,
+                        resetting: false,
+                        unsupported_feature_notice: None,
                         log_client_parameter_status_changes,
                         prepared_statement_cache: match server_prepared_statement_cache_size {
                             0 => None,

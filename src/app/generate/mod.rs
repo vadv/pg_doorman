@@ -140,6 +140,7 @@ pub fn generate_config_with_client(
                     idle_timeout: None,
                     server_lifetime: None,
                     cleanup_server_connections: false,
+                    server_reset_query: None,
                     log_client_parameter_status_changes: false,
                     application_name: None,
                     server_host: config

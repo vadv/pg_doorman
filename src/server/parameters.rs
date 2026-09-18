@@ -240,6 +240,15 @@ impl ServerParameters {
         }
     }
 
+    /// Preserve reported/server-owned values; forget SET values reset without
+    /// ParameterStatus so a later checkout cannot mistake them for current state.
+    pub(crate) fn forget_untracked(&mut self) {
+        self.parameters
+            .retain(|key, _| TRACKED_PARAMETERS.contains(key) || is_set_forbidden(key));
+        self.planner_hash_cache
+            .store(PLANNER_HASH_UNSET, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Diff the backend snapshot (`self`) against the client's desired
     /// state and return the SET/RESET actions needed for checkout sync.
     /// Forbidden names are skipped on both passes.

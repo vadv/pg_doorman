@@ -284,6 +284,14 @@ general:
   # Default: false
   sync_server_parameters: false
 
+  # Optional full reset SQL before reusing a backend after client work.
+  # Unset keeps selective cleanup. Pools may override this query.
+  # Must clear session state, prepared statements and cursors; requires
+  # cleanup_server_connections = true. Empty queries are rejected.
+  # DISCARD ALL is a PostgreSQL example, not a Greengage reset.
+  # Default: None (selective cleanup)
+  # server_reset_query: "DISCARD ALL"
+
   # DataRow messages larger than this threshold are streamed to the client in small chunks
   # instead of being buffered entirely in memory. Prevents memory spikes on large rows.
   # Supports human-readable format: "1MB", "1M", or 1048576 (bytes)
@@ -607,9 +615,16 @@ pools:
 
     # Reset session state (SET, prepared statements, cursors) when returning a connection to pool.
     # ROLLBACK for open transactions is always executed regardless of this setting.
-    # Prevents state leaking between clients in transaction mode.
+    # With cleanup disabled, a backend with tracked dirty state is closed instead of reused.
     # Default: true
     cleanup_server_connections: true
+
+    # Override general.server_reset_query for this pool. Unset inherits the
+    # general query; when both are unset, use selective cleanup.
+    # Requires cleanup_server_connections = true. Empty queries are rejected.
+    # DISCARD ALL is a PostgreSQL example, not a Greengage reset.
+    # Default: None (uses global setting)
+    # server_reset_query: "DISCARD ALL"
 
     # Override global sync_server_parameters for this pool.
     # Default: None (uses global setting)

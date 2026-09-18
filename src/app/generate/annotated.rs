@@ -154,6 +154,7 @@ pub fn generate_reference_config(format: ConfigFormat, russian: bool) -> String 
         idle_timeout: None,
         server_lifetime: None,
         cleanup_server_connections: true,
+        server_reset_query: None,
         log_client_parameter_status_changes: false,
         application_name: None,
         prepared_statements_cache_size: None,
@@ -850,6 +851,18 @@ fn write_general_section(w: &mut ConfigWriter, config: &Config) {
     );
     w.blank();
 
+    write_field_comment(w, fi, "general", "server_reset_query");
+    if let Some(query) = &g.server_reset_query {
+        w.kv(
+            fi,
+            "server_reset_query",
+            &serde_json::to_string(query).unwrap(),
+        );
+    } else {
+        w.commented_kv(fi, "server_reset_query", &w.str_val("DISCARD ALL"));
+    }
+    w.blank();
+
     write_field_desc(w, fi, "general", "message_size_to_be_stream");
     write_byte_size_value(
         w,
@@ -1384,6 +1397,18 @@ fn write_single_pool(w: &mut ConfigWriter, pool_name: &str, pool: &Pool) {
         "cleanup_server_connections",
         &w.bool_val(pool.cleanup_server_connections),
     );
+    w.blank();
+
+    write_field_comment(w, fi, "pool", "server_reset_query");
+    if let Some(query) = &pool.server_reset_query {
+        w.kv(
+            fi,
+            "server_reset_query",
+            &serde_json::to_string(query).unwrap(),
+        );
+    } else {
+        w.commented_kv(fi, "server_reset_query", &w.str_val("DISCARD ALL"));
+    }
     w.blank();
 
     write_field_comment(w, fi, "pool", "sync_server_parameters");
@@ -2087,6 +2112,37 @@ fn write_byte_size_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_queries_roundtrip_annotated_config() {
+        let mut config = Config::default();
+        config.general.server_reset_query = Some("RESET ALL;\nSELECT 'quoted \"value\"';".into());
+        config.pools.insert(
+            "test".into(),
+            Pool {
+                server_reset_query: Some("RESET ALL; DEALLOCATE ALL; CLOSE ALL;".into()),
+                users: vec![User::default()],
+                ..Pool::default()
+            },
+        );
+        for format in [ConfigFormat::Toml, ConfigFormat::Yaml] {
+            for russian in [false, true] {
+                let text = generate_annotated_config(&config, format, russian);
+                let parsed: Config = match format {
+                    ConfigFormat::Toml => toml::from_str(&text).unwrap(),
+                    ConfigFormat::Yaml => serde_yaml::from_str(&text).unwrap(),
+                };
+                assert_eq!(
+                    parsed.general.server_reset_query,
+                    config.general.server_reset_query
+                );
+                assert_eq!(
+                    parsed.pools["test"].server_reset_query,
+                    config.pools["test"].server_reset_query
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_fields_yaml_parses() {

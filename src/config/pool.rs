@@ -82,6 +82,10 @@ pub struct Pool {
     #[serde(default = "Pool::default_cleanup_server_connections")]
     pub cleanup_server_connections: bool,
 
+    /// Override general.server_reset_query for this pool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_reset_query: Option<String>,
+
     #[serde(default)] // False
     pub log_client_parameter_status_changes: bool,
 
@@ -212,6 +216,16 @@ impl Pool {
             .unwrap_or(general.sync_server_parameters)
     }
 
+    /// Pool overrides the global query; no query keeps selective cleanup.
+    pub fn effective_server_reset_query<'a>(
+        &'a self,
+        general: &'a super::General,
+    ) -> Option<&'a str> {
+        self.server_reset_query
+            .as_deref()
+            .or(general.server_reset_query.as_deref())
+    }
+
     pub fn default_pool_mode() -> PoolMode {
         PoolMode::Transaction
     }
@@ -251,6 +265,10 @@ impl Pool {
     }
 
     pub async fn validate(&mut self) -> Result<(), Error> {
+        super::validate_server_reset_query(
+            self.server_reset_query.as_deref(),
+            "pool.server_reset_query",
+        )?;
         crate::config::startup_parameters::validate(
             &self.startup_parameters,
             "pool.startup_parameters",
@@ -460,6 +478,7 @@ impl Default for Pool {
             idle_timeout: None,
             server_lifetime: None,
             cleanup_server_connections: true,
+            server_reset_query: None,
             log_client_parameter_status_changes: false,
             application_name: None,
             prepared_statements_cache_size: None,
