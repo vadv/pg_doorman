@@ -1,7 +1,7 @@
-.PHONY: help local-build pull shell tests-build test-all test-bdd test-rust test-go test-python test-nodejs test-dotnet test-php clean
+.PHONY: help local-build pull shell tests-build test-all test-bdd test-greengage test-rust test-go test-python test-nodejs test-dotnet test-php clean
 
 REGISTRY ?= ghcr.io
-REPO ?= $(shell git -C $(PROJECT_ROOT) config --get remote.origin.url | sed 's#^.*github\.com[:/]##;s#\.git$$##')
+REPO ?= $(shell git -C $(PROJECT_ROOT) config --get remote.origin.url | sed 's|^.*github\.com[:/]||;s|\.git$$||')
 IMAGE_TAG ?= flake-$(shell cat $(TESTS_DIR)nix/flake.nix $(TESTS_DIR)nix/flake.lock | shasum -a 256 | cut -c1-16)
 export REGISTRY REPO IMAGE_TAG
 
@@ -52,6 +52,9 @@ ifdef TAGS
 else
 	@$(TESTS_DIR)nix/run-tests.sh bdd
 endif
+
+test-greengage: ## Run cleanup BDD against a disposable Greengage cluster
+	@$(TESTS_DIR)nix/run-tests.sh greengage $(if $(TAGS),"$(TAGS)")
 
 test-go: ## Run Go client tests
 	@$(TESTS_DIR)nix/run-tests.sh test-go
