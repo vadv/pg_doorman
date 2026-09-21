@@ -812,6 +812,31 @@ fields:
         `application_name` setting instead.
       default: "false"
 
+    cleanup_server_connections:
+      config:
+        en: |
+          Default session cleanup mode: off, adaptive, or always.
+          Adaptive avoids cleanup SQL for ordinary queries and cached prepared statements.
+          Always requires cleanup_server_query. Legacy false/true mean off/adaptive.
+        ru: |
+          Режим очистки сессии по умолчанию: off, adaptive или always.
+          Adaptive не добавляет SQL очистки для обычных запросов и кешируемых prepared statements.
+          Always требует cleanup_server_query. Старые false/true означают off/adaptive.
+      doc: |
+        Default session cleanup mode: `off`, `adaptive`, or `always`.
+        Legacy `false` and `true` mean `off` and `adaptive`.
+        See [pool settings](pool.md#cleanup_server_connections) for mode selection and limitations.
+      default: '"adaptive"'
+
+    cleanup_server_query:
+      config:
+        en: "Custom session cleanup SQL. Required for always; replaces built-in cleanup in adaptive."
+        ru: "SQL для очистки сессии. Обязателен для always; заменяет встроенную очистку в adaptive."
+      doc: |
+        Session cleanup SQL, required for `always`. Pools can override it independently of the cleanup mode.
+        See [pool settings](pool.md#cleanup_server_query) for examples and SQL requirements.
+      default: "None (built-in adaptive cleanup)"
+
     message_size_to_be_stream:
       config:
         en: |
@@ -1377,24 +1402,69 @@ fields:
       doc: "Override global sync_server_parameters for this pool. When enabled, client-sent session parameters (e.g. search_path, work_mem) are applied via SET queries on checkout. If not specified, the global setting is used."
       default: "None (uses global setting)"
 
+    cleanup_server_query:
+      config:
+        en: |
+          Override general.cleanup_server_query with custom session cleanup SQL.
+          Replaces built-in cleanup in adaptive; required for always; ignored in off.
+        ru: |
+          SQL для очистки сессии вместо general.cleanup_server_query.
+          Заменяет встроенную очистку в adaptive; обязателен для always; не используется в off.
+      doc: |
+        SQL that replaces built-in cleanup. Runs as needed in `adaptive`, unconditionally in `always`, and never in `off`.
+        Inherits `general.cleanup_server_query`; if neither is set, `adaptive` uses built-in cleanup.
+
+        The query must reset session parameters and release prepared statements, cursors and other application resources.
+        An error or a `general.connect_timeout` timeout closes the server connection.
+        The query must not leave a transaction open or enter COPY mode.
+
+        For PostgreSQL: `cleanup_server_query = "DISCARD ALL"`.
+        Example for Greengage 7:
+
+        ```sql
+        CLOSE ALL;
+        SET SESSION AUTHORIZATION DEFAULT;
+        RESET ALL;
+        DEALLOCATE ALL;
+        UNLISTEN *;
+        SELECT pg_advisory_unlock_all();
+        DISCARD PLANS;
+        ```
+
+        This variant does not remove temporary objects or reset sequence session state.
+        In Greengage 7, `DISCARD ALL` also leaves temporary tables on segments.
+      default: "None (uses global setting)"
+
     cleanup_server_connections:
       config:
         en: |
-          Reset session state (SET, prepared statements, cursors) when returning a connection to pool.
-          ROLLBACK for open transactions is always executed regardless of this setting.
-          Prevents state leaking between clients in transaction mode.
+          Override general.cleanup_server_connections: off, adaptive, or always.
+          Adaptive avoids cleanup SQL for ordinary queries and cached prepared statements.
+          Always requires cleanup_server_query. Off does not disable ROLLBACK.
         ru: |
-          Сбрасывать состояние сессии (SET, prepared statements, курсоры) при возврате соединения в пул.
-          ROLLBACK для открытых транзакций выполняется всегда независимо от этой настройки.
-          Предотвращает утечку состояния между клиентами в транзакционном режиме.
+          Переопределить general.cleanup_server_connections: off, adaptive или always.
+          Adaptive не добавляет SQL очистки для обычных запросов и кешируемых prepared statements.
+          Always требует cleanup_server_query. Off не отключает ROLLBACK.
       doc: |
-        Controls whether pg_doorman resets session state when a connection is returned to the pool.
-        When enabled and the session was modified, pg_doorman sends: `RESET ROLE`, plus conditionally
-        `RESET ALL` (if SET was used), `DEALLOCATE ALL` (if PREPARE was used), `CLOSE ALL` (if cursors
-        were opened). Note: `ROLLBACK` for open transactions is always executed regardless of this setting.
-        Disable only if your application never uses SET, prepared statements, or cursors and you want
-        to save the cleanup roundtrip.
-      default: "true"
+        Session cleanup mode:
+
+        - `adaptive` (default): cleanup based on session state changes. Ordinary queries, including cached prepared statements, do not require extra SQL.
+        - `always`: unconditional execution of `cleanup_server_query`. The query is required.
+        - `off`: no session cleanup. ROLLBACK of an unfinished transaction is unaffected.
+
+        Built-in cleanup uses `RESET ROLE` and, as needed, `RESET ALL`, `DEALLOCATE ALL` and `CLOSE ALL`.
+        After a client reset batch containing `RESET ALL` (such as pgx's), built-in cleanup does not add another `RESET ALL`.
+        Use `cleanup_server_query` to supply your own SQL.
+
+        Limitations of `adaptive`:
+
+        - SQL `PREPARE`, temporary objects, `LISTEN`, advisory locks and function side effects are not independently tracked. To clean these resources unconditionally, use `always` with suitable SQL.
+        - PostgreSQL returns the same `RESET` tag for all parameters and a single parameter. Without `cleanup_server_query`, even a single-parameter reset cancels the subsequent `RESET ALL`, so other changed parameters may remain set.
+        - With `cleanup_server_query`, client `RESET` and `DISCARD ALL` do not replace the configured cleanup.
+
+        Mode and query inherit independently from `general`. Legacy `true` and `false` mean `adaptive` and `off`.
+        Policy changes through `RELOAD` apply to new client connections.
+      default: "None (uses global setting)"
 
     prepared_statements_cache_size:
       config:

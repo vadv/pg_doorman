@@ -13,7 +13,7 @@ use log::{debug, info, warn};
 use tokio::sync::{Notify, Semaphore};
 
 use crate::config::startup_parameters as sp;
-use crate::config::{Address, User};
+use crate::config::{Address, CleanupMode, User};
 use crate::errors::Error;
 use crate::patroni::types::Role;
 use crate::server::Server;
@@ -175,7 +175,8 @@ pub struct ServerPool {
     client_server_map: ClientServerMap,
 
     /// Should we clean up dirty connections before putting them into the pool?
-    cleanup_connections: bool,
+    cleanup_connections: CleanupMode,
+    cleanup_server_query: Option<String>,
 
     application_name: String,
 
@@ -289,7 +290,8 @@ impl ServerPool {
         user: User,
         database: &str,
         client_server_map: ClientServerMap,
-        cleanup_connections: bool,
+        cleanup_connections: CleanupMode,
+        cleanup_server_query: Option<String>,
         log_client_parameter_status_changes: bool,
         prepared_statement_cache_size: usize,
         application_name: String,
@@ -330,6 +332,7 @@ impl ServerPool {
             database: database.to_string(),
             client_server_map,
             cleanup_connections,
+            cleanup_server_query,
             log_client_parameter_status_changes,
             prepared_statement_cache_size,
             create_semaphore: Arc::new(Semaphore::new(max_concurrent_creates)),
@@ -434,6 +437,7 @@ impl ServerPool {
                 self.client_server_map.clone(),
                 stats.clone(),
                 self.cleanup_connections,
+                self.cleanup_server_query.clone(),
                 self.log_client_parameter_status_changes,
                 self.prepared_statement_cache_size,
                 self.application_name.clone(),
@@ -489,6 +493,7 @@ impl ServerPool {
                     self.client_server_map.clone(),
                     retry_stats.clone(),
                     self.cleanup_connections,
+                    self.cleanup_server_query.clone(),
                     self.log_client_parameter_status_changes,
                     self.prepared_statement_cache_size,
                     self.application_name.clone(),
@@ -1062,6 +1067,7 @@ impl ServerPool {
                 self.client_server_map.clone(),
                 stats.clone(),
                 self.cleanup_connections,
+                self.cleanup_server_query.clone(),
                 self.log_client_parameter_status_changes,
                 self.prepared_statement_cache_size,
                 self.application_name.clone(),
@@ -1114,6 +1120,7 @@ impl ServerPool {
                     self.client_server_map.clone(),
                     retry_stats.clone(),
                     self.cleanup_connections,
+                    self.cleanup_server_query.clone(),
                     self.log_client_parameter_status_changes,
                     self.prepared_statement_cache_size,
                     self.application_name.clone(),
