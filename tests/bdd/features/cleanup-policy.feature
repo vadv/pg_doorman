@@ -466,8 +466,8 @@ Feature: Backend cleanup policy
     When we send SimpleQuery "SELECT n FROM public.cleanup_counter" to session "observer" and store response
     Then session "observer" should receive exactly one DataRow "1"
 
-  @cleanup-async @cleanup-async-reset-error
-  Scenario: Failed cleanup after Flush closes the frontend and retires the dirty backend
+  @cleanup-async @cleanup-async-reset-error @cleanup-review
+  Scenario: Failed cleanup after Flush preserves ReadyForQuery and retires the dirty backend
     When we create session "observer" to postgres as "postgres" with password "" and database "example_db"
     And we send SimpleQuery "CREATE TABLE public.cleanup_counter (n int); INSERT INTO public.cleanup_counter VALUES (0)" to session "observer"
     Given pg_doorman started with config:
@@ -501,18 +501,16 @@ Feature: Backend cleanup policy
     And we send Execute "" to session "one"
     And we send Flush to session "one"
     And we read backend messages "12DC" from session "one"
-    And we store backend_pid from last response of session "one"
+    And we store backend_pid from last response of session "one" as "before"
     Then session "one" should receive exactly one DataRow "${one_pid}|10s|2"
     When we send SimpleQuery "SELECT is_called FROM public.cleanup_attempts" to session "observer" and store response
     Then session "observer" should receive exactly one DataRow "f"
-    When we send Sync to session "one" expecting connection close
+    When we send Sync to session "one"
+    Then session "one" should receive ReadyForQuery "I"
     And we send SimpleQuery "SELECT last_value, is_called FROM public.cleanup_attempts" to session "observer" and store response
     Then session "observer" should receive exactly one DataRow "1|t"
-    When we create session "next" to pg_doorman as "example_user_1" with password "" and database "example_db"
-    And we send SimpleQuery "BEGIN; SELECT pg_backend_pid()" to session "next" without waiting
-    Then we read SimpleQuery response from session "next" within 5000ms
-    When we store backend_pid from last response of session "next"
-    Then backend_pid from session "next" should not equal backend_pid from session "one"
-    When we send SimpleQuery "SELECT current_setting('statement_timeout'), (SELECT count(*) FROM pg_prepared_statements)" to session "next" and store response
-    Then session "next" should receive exactly one DataRow "0|0"
-    And session "next" should receive ReadyForQuery "T"
+    When we send SimpleQuery "BEGIN; SELECT pg_backend_pid()" to session "one" and store backend_pid as "after"
+    Then named backend_pid "after" from session "one" is different from "before"
+    When we send SimpleQuery "SELECT current_setting('statement_timeout'), (SELECT count(*) FROM pg_prepared_statements)" to session "one" and store response
+    Then session "one" should receive exactly one DataRow "0|0"
+    And session "one" should receive ReadyForQuery "T"

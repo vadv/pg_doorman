@@ -37,22 +37,14 @@ use super::server_backend::Server;
 
 // PostgreSQL CommandComplete message payloads for tracking session state changes.
 //
-// A checkin-time `RESET ALL` / `DEALLOCATE ALL` / `CLOSE ALL` is a heuristic
-// upper bound: we arm the `needs_cleanup_*` flags when we see a statement that
-// *might* have mutated the session, and we disarm them when we see a statement
-// that has since restored it. Disarming matters because otherwise a client that
-// performs its own reset batch (e.g. pgx on internal context deadline sends
-// `SET SESSION AUTHORIZATION DEFAULT; RESET ALL; CLOSE ALL; UNLISTEN *;
-// DISCARD PLANS; ...`) leaves pg_doorman thinking the connection is still dirty
-// and triggers a second, redundant `RESET ALL` round-trip on checkin.
+// Arm cleanup flags on session mutations and clear them only when a command
+// confirms that the corresponding state was fully reset.
 
 /// `SET` statement CommandComplete tag — arms the `needs_cleanup_set` flag.
 /// Returned for any `SET foo = ...`, including `SET SESSION AUTHORIZATION ...`.
 const COMMAND_COMPLETE_BY_SET: &[u8; 4] = b"SET\0";
-/// `RESET` statement CommandComplete tag — disarms `needs_cleanup_set`.
-/// PostgreSQL returns this tag both for `RESET ALL` and for `RESET foo.bar`;
-/// the per-GUC form is still safe to treat as a reset because the only state
-/// pg_doorman tracked is the `SET` flag — the next `SET` will re-arm it.
+/// `RESET` has the same tag for ALL and a single GUC. Only our own cleanup
+/// may use it to clear `needs_cleanup_set`.
 const COMMAND_COMPLETE_BY_RESET: &[u8; 6] = b"RESET\0";
 /// `DECLARE CURSOR` CommandComplete tag — arms the `needs_cleanup_declare` flag.
 const COMMAND_COMPLETE_BY_DECLARE: &[u8; 15] = b"DECLARE CURSOR\0";
@@ -486,12 +478,14 @@ fn drop_prepared_statement_cache_on_reset(server: &mut Server, reason: &'static 
     else {
         return;
     };
-    warn!(
-        "[{}@{}] clearing prepared statement cache pid={}: {reason} ({cache_size} entries)",
-        server.address.username,
-        server.address.pool_name,
-        server.get_process_id(),
-    );
+    if !server.resetting && cache_size > 0 {
+        warn!(
+            "[{}@{}] clearing prepared statement cache pid={}: {reason} ({cache_size} entries)",
+            server.address.username,
+            server.address.pool_name,
+            server.get_process_id(),
+        );
+    }
     if let Some(cache) = server.prepared_statement_cache.as_mut() {
         cache.clear();
     }
@@ -499,10 +493,8 @@ fn drop_prepared_statement_cache_on_reset(server: &mut Server, reason: &'static 
 
 /// Handles CommandComplete ('C') message - indicates successful completion of a command.
 /// Tracks commands that may require cleanup (SET, DECLARE, ...) and disarms the
-/// cleanup flags when the session has since been restored by a RESET / DISCARD /
-/// DEALLOCATE / CLOSE ALL statement in the same or a later batch — so that the
-/// next checkin does not issue a redundant `RESET ALL` round-trip on a connection
-/// the client has already cleaned up.
+/// cleanup flags after DISCARD / DEALLOCATE / CLOSE ALL. A client RESET cannot
+/// disarm SET cleanup: its command tag does not identify which GUC was reset.
 fn handle_command_complete(server: &mut Server, message: &BytesMut) {
     // Exit COPY mode if we were in it
     if server.in_copy_mode {
@@ -520,7 +512,7 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
         CommandCompleteEffect::DisarmSet => {
             // RESET has the same tag for one GUC and ALL. Keep the configured
             // cleanup obligation until our own complete batch succeeds.
-            if !server.custom_cleanup_enabled() || server.resetting {
+            if server.resetting {
                 server.cleanup_state.needs_cleanup_set = false;
             }
         }
@@ -933,10 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_tag_disarms_set_cleanup() {
-        // PostgreSQL emits the same `RESET\0` tag for `RESET ALL` and
-        // `RESET foo.bar`; both restore GUCs to their default so either one
-        // legitimately disarms pg_doorman's heuristic flag.
+    fn reset_tag_is_classified_for_cleanup_context() {
         assert_eq!(
             classify_command_complete(b"RESET\0"),
             CommandCompleteEffect::DisarmSet,

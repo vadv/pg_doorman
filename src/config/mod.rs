@@ -66,25 +66,34 @@ pub enum CleanupMode {
 
 impl<'de> serde::Deserialize<'de> for CleanupMode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Value {
-            Bool(bool),
-            Text(String),
+        struct CleanupModeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CleanupModeVisitor {
+            type Value = CleanupMode;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a boolean or one of: off, adaptive, always")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(if value {
+                    CleanupMode::Adaptive
+                } else {
+                    CleanupMode::Off
+                })
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                match value {
+                    "off" => Ok(CleanupMode::Off),
+                    "adaptive" => Ok(CleanupMode::Adaptive),
+                    "always" => Ok(CleanupMode::Always),
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str(value), &self)),
+                }
+            }
         }
-        match <Value as serde::Deserialize>::deserialize(deserializer)? {
-            Value::Bool(true) => Ok(Self::Adaptive),
-            Value::Bool(false) => Ok(Self::Off),
-            Value::Text(value) => match value.as_str() {
-                "off" => Ok(Self::Off),
-                "adaptive" => Ok(Self::Adaptive),
-                "always" => Ok(Self::Always),
-                _ => Err(serde::de::Error::unknown_variant(
-                    &value,
-                    &["off", "adaptive", "always"],
-                )),
-            },
-        }
+
+        deserializer.deserialize_any(CleanupModeVisitor)
     }
 }
 

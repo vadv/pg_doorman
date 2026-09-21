@@ -1,28 +1,8 @@
 @rust @rust-3 @client-session-reset-cleanup
-Feature: Client session reset batch suppresses doorman-side cleanup
-  When a client (e.g. jackc/pgx on an internal context deadline) keeps the
-  server connection alive by running a self-cleanup batch such as
-
-      SET SESSION AUTHORIZATION DEFAULT;
-      RESET ALL;
-      CLOSE ALL;
-      UNLISTEN *;
-      SELECT pg_advisory_unlock_all();
-      DISCARD PLANS;
-      DISCARD SEQUENCES;
-      DISCARD TEMP;
-
-  pg_doorman must recognise that the session is already clean and skip the
-  checkin-time `RESET ROLE; RESET ALL; ...` round-trip it would otherwise send.
-  Without this recognition every dangling client query triples the traffic to
-  PostgreSQL: the original (stuck) query, the client's self-reset batch, and a
-  redundant pg_doorman reset.
-
-  Each scenario starts PostgreSQL with `log_statement = 'all'` and asserts the
-  absence or presence of pg_doorman's cleanup statements in the server log.
-  The `RESET ROLE` prefix is used as a marker because pg_doorman always prefixes
-  its cleanup batch with `RESET ROLE;` and clients from the real world do not
-  issue it.
+Feature: Cleanup after client session reset commands
+  DISCARD ALL, DEALLOCATE ALL and CLOSE ALL can discharge their cleanup flags.
+  RESET has the same command tag for one parameter and ALL, so it cannot prove
+  that all session parameters have been restored.
 
   Background:
     Given PostgreSQL started with options "-c log_statement=all -c logging_collector=off" and pg_hba.conf:
@@ -65,7 +45,7 @@ Feature: Client session reset batch suppresses doorman-side cleanup
       """
 
   @client-session-reset-cleanup-pgx-batch
-  Scenario: pgx-style session reset batch does not trigger a second server cleanup
+  Scenario: RESET in a pgx-style batch retains conservative server cleanup
     When we create session "one" to pg_doorman as "example_user_1" with password "" and database "example_db"
     # Warm the pool with a trivial query so that server auth and any startup
     # chatter is already in the log before we start asserting on it.
@@ -75,11 +55,9 @@ Feature: Client session reset batch suppresses doorman-side cleanup
     # Exactly the batch jackc/pgx emits on an internal context deadline.
     And we send SimpleQuery "SET SESSION AUTHORIZATION DEFAULT; RESET ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP" to session "one"
     And we sleep 300ms
-    # Client batch itself still shows up once — that is the one we expect.
-    Then PostgreSQL log should contain exactly 1 occurrences of "RESET ALL"
-    # pg_doorman's checkin cleanup would have prefixed its batch with RESET ROLE.
-    # Its absence proves the second cleanup was suppressed.
-    And PostgreSQL log should not contain "RESET ROLE"
+    # One RESET ALL comes from the client; the other from checkin cleanup.
+    Then PostgreSQL log should contain exactly 2 occurrences of "RESET ALL"
+    And PostgreSQL log should contain "RESET ROLE"
 
   @client-session-reset-cleanup-real-set-still-cleans
   Scenario: a genuine SET still arms the checkin cleanup
@@ -139,13 +117,7 @@ Feature: Client session reset batch suppresses doorman-side cleanup
     And PostgreSQL log should not contain "RESET ROLE"
 
   @client-session-reset-cleanup-per-guc-reset
-  Scenario: Per-GUC RESET disarms set-cleanup
-    # PostgreSQL returns the same `RESET` tag for `RESET ALL` and `RESET foo`,
-    # so a per-GUC RESET after a SET on the same GUC leaves the session clean
-    # as far as pg_doorman is concerned. Documents the intentional trade-off:
-    # `SET a=1; SET b=2; RESET a;` would also be treated as clean, because
-    # pg_doorman only tracks a single cleanup bit and cannot distinguish which
-    # GUCs are still modified.
+  Scenario: Per-GUC RESET retains set-cleanup
     When we create session "five" to pg_doorman as "example_user_1" with password "" and database "example_db_session"
     And we send SimpleQuery "SELECT 1" to session "five"
     And we sleep 100ms
@@ -155,7 +127,8 @@ Feature: Client session reset batch suppresses doorman-side cleanup
     And we close session "five"
     And we sleep 300ms
     Then PostgreSQL log should contain "RESET statement_timeout"
-    And PostgreSQL log should not contain "RESET ROLE"
+    And PostgreSQL log should contain "RESET ROLE"
+    And PostgreSQL log should contain exactly 1 occurrences of "RESET ALL"
 
   @client-session-reset-cleanup-single-close-keeps-armed
   Scenario: Closing one named cursor does not disarm declare-cleanup

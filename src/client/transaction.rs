@@ -449,7 +449,7 @@ where
         }
 
         let cleanup_result = if conn.custom_cleanup_enabled() {
-            conn.checkin_cleanup().await
+            conn.cleanup_after_response().await
         } else {
             Ok(())
         };
@@ -1146,7 +1146,7 @@ where
                                 Err(err) => {
                                     self.stats.disconnect();
                                     self.connected_to_server = false;
-                                    server.checkin_cleanup().await?;
+                                    let _ = server.checkin_cleanup().await;
                                     self.release();
                                     return self.process_error(err).await;
                                 }
@@ -1189,7 +1189,7 @@ where
 
                         // Terminate
                         'X' => {
-                            server.checkin_cleanup().await?;
+                            let _ = server.checkin_cleanup().await;
                             self.stats.disconnect();
                             self.connected_to_server = false;
                             self.release();
@@ -1271,7 +1271,7 @@ where
                 if shutdown_in_progress {
                     server.mark_bad("graceful shutdown - releasing server connection");
                 } else if !server.is_async() {
-                    server.checkin_cleanup().await?;
+                    server.cleanup_after_response().await?;
                 }
                 if self.transaction_mode {
                     server
