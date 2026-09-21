@@ -1,8 +1,8 @@
 @rust @rust-3 @client-session-reset-cleanup
 Feature: Cleanup after client session reset commands
-  DISCARD ALL, DEALLOCATE ALL and CLOSE ALL can discharge their cleanup flags.
-  RESET has the same command tag for one parameter and ALL, so it cannot prove
-  that all session parameters have been restored.
+  Client reset commands suppress the corresponding built-in cleanup.
+  RESET ALL and per-parameter RESET share a command tag, so both suppress
+  the built-in RESET ALL.
 
   Background:
     Given PostgreSQL started with options "-c log_statement=all -c logging_collector=off" and pg_hba.conf:
@@ -41,23 +41,21 @@ Feature: Cleanup after client session reset commands
       [[pools.example_db_session.users]]
       username = "example_user_1"
       password = ""
-      pool_size = 2
+      pool_size = 1
       """
 
   @client-session-reset-cleanup-pgx-batch
-  Scenario: RESET in a pgx-style batch retains conservative server cleanup
+  Scenario: A pgx-style reset batch does not trigger a second RESET ALL
     When we create session "one" to pg_doorman as "example_user_1" with password "" and database "example_db"
     # Warm the pool with a trivial query so that server auth and any startup
     # chatter is already in the log before we start asserting on it.
     And we send SimpleQuery "SELECT 1" to session "one"
-    And we sleep 100ms
     When we truncate PostgreSQL log
     # Exactly the batch jackc/pgx emits on an internal context deadline.
     And we send SimpleQuery "SET SESSION AUTHORIZATION DEFAULT; RESET ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP" to session "one"
-    And we sleep 300ms
-    # One RESET ALL comes from the client; the other from checkin cleanup.
-    Then PostgreSQL log should contain exactly 2 occurrences of "RESET ALL"
-    And PostgreSQL log should contain "RESET ROLE"
+    # ReadyForQuery arrives after checkin; only the client's RESET ALL is logged.
+    Then PostgreSQL log should contain exactly 1 occurrences of "RESET ALL"
+    And PostgreSQL log should not contain "RESET ROLE"
 
   @client-session-reset-cleanup-real-set-still-cleans
   Scenario: a genuine SET still arms the checkin cleanup
@@ -117,18 +115,20 @@ Feature: Cleanup after client session reset commands
     And PostgreSQL log should not contain "RESET ROLE"
 
   @client-session-reset-cleanup-per-guc-reset
-  Scenario: Per-GUC RESET retains set-cleanup
+  Scenario: Per-GUC RESET suppresses built-in RESET ALL
     When we create session "five" to pg_doorman as "example_user_1" with password "" and database "example_db_session"
-    And we send SimpleQuery "SELECT 1" to session "five"
-    And we sleep 100ms
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "five" and store backend_pid
     When we truncate PostgreSQL log
     And we send SimpleQuery "SET statement_timeout = 1000" to session "five"
     And we send SimpleQuery "RESET statement_timeout" to session "five"
     And we close session "five"
-    And we sleep 300ms
-    Then PostgreSQL log should contain "RESET statement_timeout"
-    And PostgreSQL log should contain "RESET ROLE"
-    And PostgreSQL log should contain exactly 1 occurrences of "RESET ALL"
+    # Pool size 1 makes the next checkout wait for the previous checkin.
+    And we create session "next" to pg_doorman as "example_user_1" with password "" and database "example_db_session"
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "next" and store backend_pid
+    Then backend_pid from session "next" should equal backend_pid from session "five"
+    And PostgreSQL log should contain "RESET statement_timeout"
+    And PostgreSQL log should not contain "RESET ROLE"
+    And PostgreSQL log should contain exactly 0 occurrences of "RESET ALL"
 
   @client-session-reset-cleanup-single-close-keeps-armed
   Scenario: Closing one named cursor does not disarm declare-cleanup

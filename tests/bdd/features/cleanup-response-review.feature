@@ -1,5 +1,5 @@
 @rust @rust-3 @cleanup-review @cleanup-review-response
-Feature: Cleanup failures preserve completed client responses
+Feature: Cleanup preserves completed client responses
 
   Background:
     Given PostgreSQL started with pg_hba.conf:
@@ -12,7 +12,7 @@ Feature: Cleanup failures preserve completed client responses
     And we send SimpleQuery "CREATE TABLE public.committed_rows (id int PRIMARY KEY)" to session "observer"
 
   @cleanup-review-commit
-  Scenario Outline: Cleanup failures preserve COMMIT responses
+  Scenario Outline: Cleanup errors and notices preserve COMMIT responses
     Given pg_doorman started with config:
       """
       general:
@@ -40,7 +40,7 @@ Feature: Cleanup failures preserve completed client responses
     When we send SimpleQuery "SELECT count(*) FROM public.committed_rows" to session "observer" and store response
     Then session "observer" should receive exactly one DataRow "1"
     When we send SimpleQuery "BEGIN; SELECT pg_backend_pid()" to session "one" and store backend_pid as "after"
-    Then named backend_pid "after" from session "one" is different from "before"
+    Then named backend_pid "after" from session "one" is <comparison> "before"
     When we send SimpleQuery "SELECT count(*) FROM public.committed_rows" to session "one" and store response
     Then session "one" should receive exactly one DataRow "1"
     When we send SimpleQuery "ROLLBACK" to session "one" and store response
@@ -48,14 +48,14 @@ Feature: Cleanup failures preserve completed client responses
     And session "one" should receive ReadyForQuery "I"
 
     Examples:
-      | reset_query                                                                        |
-      | SELECT 1 / 0                                                                       |
-      | DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0AM01', MESSAGE = 'partial reset'; END $$ |
-      | DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0A000', MESSAGE = 'unsupported'; END $$   |
-      | BEGIN                                                                              |
-      | COPY public.committed_rows FROM STDIN                                               |
-      | SELECT pg_sleep(5)                                                                 |
-      | /* empty reset */                                                                  |
+      | reset_query                                                                           | comparison     |
+      | SELECT 1 / 0                                                                          | different from |
+      | DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0AM01', MESSAGE = 'cleanup notice'; END $$    | same as        |
+      | DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0A000', MESSAGE = 'cleanup notice'; END $$    | same as        |
+      | BEGIN                                                                                 | different from |
+      | COPY public.committed_rows FROM STDIN                                                  | different from |
+      | SELECT pg_sleep(5)                                                                    | different from |
+      | /* empty reset */                                                                     | different from |
 
   @cleanup-review-legacy-flush
   Scenario: Built-in cleanup drains its own response after a disconnected Flush

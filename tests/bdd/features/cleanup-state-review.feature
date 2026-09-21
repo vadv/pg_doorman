@@ -74,7 +74,7 @@ Feature: Cleanup preserves isolation and restores client startup parameters
     Then session "next" should receive DataRow with "0"
 
   @cleanup-review-single-reset
-  Scenario: Resetting one parameter cannot leak another parameter to the next client
+  Scenario Outline: A partial client RESET cancels only built-in parameter cleanup
     Given pg_doorman started with config:
       """
       general:
@@ -82,6 +82,7 @@ Feature: Cleanup preserves isolation and restores client startup parameters
         port: ${DOORMAN_PORT}
         admin_username: admin
         admin_password: admin
+        <query_config>
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
       pools:
         example_db:
@@ -100,7 +101,12 @@ Feature: Cleanup preserves isolation and restores client startup parameters
     And we send SimpleQuery "SELECT pg_backend_pid()" to session "next" and store backend_pid
     Then backend_pid from session "next" should equal backend_pid from session "first"
     When we send SimpleQuery "SELECT setting = reset_val FROM pg_settings WHERE name = 'work_mem'" to session "next" and store response
-    Then session "next" should receive DataRow with "t"
+    Then session "next" should receive DataRow with "<is_default>"
+
+    Examples:
+      | query_config                         | is_default |
+      | # built-in cleanup                   | f          |
+      | cleanup_server_query: "RESET ALL"    | t          |
 
   @cleanup-review-client-reset-commands
   Scenario Outline: Client reset commands preserve the remaining custom cleanup obligation
@@ -239,3 +245,4 @@ Feature: Cleanup preserves isolation and restores client startup parameters
       | mode     | increment | new_client_query                                 | total |
       | always   | 1         | SELECT pg_backend_pid()                          | 3     |
       | adaptive | 10        | SET work_mem = '96MB'; SELECT pg_backend_pid()     | 12    |
+      | off      | 1         | SET work_mem = '96MB'; SELECT pg_backend_pid()     | 2     |

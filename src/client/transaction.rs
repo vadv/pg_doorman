@@ -885,13 +885,7 @@ where
                             // checkin_cleanup before give server to client.
                             match conn.checkin_cleanup().await {
                                 Ok(()) => break conn,
-                                Err(err) => {
-                                    warn!(
-                                        "[{}@{} #c{}] server cleanup error: {err}",
-                                        self.username, self.pool_name, self.connection_id,
-                                    );
-                                    continue;
-                                }
+                                Err(_) => continue,
                             };
                         }
                         Err(err) => {

@@ -46,8 +46,8 @@ Feature: Backend cleanup policy
       | reset_query                                                                               | comparison |
       | RESET ALL; DEALLOCATE ALL; CLOSE ALL; UNLISTEN *; SELECT repeat('x', 20000), pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP; SET SESSION AUTHORIZATION DEFAULT                                                     | equal      |
       | RESET ALL; DEALLOCATE ALL; SELECT 1 / 0; DISCARD TEMP                                       | not equal  |
-      | DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0AM01', MESSAGE = 'partial reset'; END $$         | not equal  |
-      | DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0A000', MESSAGE = 'unsupported reset'; END $$     | not equal  |
+      | RESET ALL; DEALLOCATE ALL; DISCARD TEMP; DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0AM01', MESSAGE = 'cleanup notice'; END $$ | equal      |
+      | RESET ALL; DEALLOCATE ALL; DISCARD TEMP; DO $$ BEGIN RAISE NOTICE USING ERRCODE = '0A000', MESSAGE = 'cleanup notice'; END $$ | equal      |
       | BEGIN                                                                                     | not equal  |
       | COPY reset_secret FROM STDIN                                                              | not equal  |
       | SELECT pg_sleep(5)                                                                        | not equal  |

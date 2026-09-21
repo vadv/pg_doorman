@@ -1415,11 +1415,11 @@ fields:
         Inherits `general.cleanup_server_query`; if neither is set, `adaptive` uses built-in cleanup.
 
         The query must reset session parameters and release prepared statements, cursors and other application resources.
-        An error, a `general.connect_timeout` timeout, or a NOTICE with code `0A000`/`0AM01` closes the server connection.
+        An error or a `general.connect_timeout` timeout closes the server connection.
         The query must not leave a transaction open or enter COPY mode.
 
         For PostgreSQL: `cleanup_server_query = "DISCARD ALL"`.
-        For Greengage:
+        Example for Greengage 7:
 
         ```sql
         CLOSE ALL;
@@ -1432,6 +1432,7 @@ fields:
         ```
 
         This variant does not remove temporary objects or reset sequence session state.
+        In Greengage 7, `DISCARD ALL` also leaves temporary tables on segments.
       default: "None (uses global setting)"
 
     cleanup_server_connections:
@@ -1452,12 +1453,13 @@ fields:
         - `off`: no session cleanup. ROLLBACK of an unfinished transaction is unaffected.
 
         Built-in cleanup uses `RESET ROLE` and, as needed, `RESET ALL`, `DEALLOCATE ALL` and `CLOSE ALL`.
+        After a client reset batch containing `RESET ALL` (such as pgx's), built-in cleanup does not add another `RESET ALL`.
         Use `cleanup_server_query` to supply your own SQL.
 
         Limitations of `adaptive`:
 
         - SQL `PREPARE`, temporary objects, `LISTEN`, advisory locks and function side effects are not independently tracked. To clean these resources unconditionally, use `always` with suitable SQL.
-        - Without `cleanup_server_query`, any client `RESET`, even of a single parameter, cancels the subsequent `RESET ALL`. Other changed parameters may remain set.
+        - PostgreSQL returns the same `RESET` tag for all parameters and a single parameter. Without `cleanup_server_query`, even a single-parameter reset cancels the subsequent `RESET ALL`, so other changed parameters may remain set.
         - With `cleanup_server_query`, client `RESET` and `DISCARD ALL` do not replace the configured cleanup.
 
         Mode and query inherit independently from `general`. Legacy `true` and `false` mean `adaptive` and `off`.

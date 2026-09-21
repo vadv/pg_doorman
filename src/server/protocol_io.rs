@@ -37,14 +37,14 @@ use super::server_backend::Server;
 
 // PostgreSQL CommandComplete message payloads for tracking session state changes.
 //
-// Arm cleanup flags on session mutations and clear them only when a command
-// confirms that the corresponding state was fully reset.
+// Arm cleanup flags on session mutations and disarm them after client cleanup.
+// Custom cleanup keeps its SET obligation until pg_doorman runs it.
 
 /// `SET` statement CommandComplete tag — arms the `needs_cleanup_set` flag.
 /// Returned for any `SET foo = ...`, including `SET SESSION AUTHORIZATION ...`.
 const COMMAND_COMPLETE_BY_SET: &[u8; 4] = b"SET\0";
-/// `RESET` has the same tag for ALL and a single GUC. Only our own cleanup
-/// may use it to clear `needs_cleanup_set`.
+/// `RESET` has the same tag for ALL and a single GUC. Either suppresses built-in
+/// SET cleanup; custom cleanup remains pending.
 const COMMAND_COMPLETE_BY_RESET: &[u8; 6] = b"RESET\0";
 /// `DECLARE CURSOR` CommandComplete tag — arms the `needs_cleanup_declare` flag.
 const COMMAND_COMPLETE_BY_DECLARE: &[u8; 15] = b"DECLARE CURSOR\0";
@@ -430,8 +430,8 @@ enum CommandCompleteEffect {
     ArmSet,
     /// `DECLARE CURSOR` — a server-side cursor may now be open; arm declare-cleanup.
     ArmDeclare,
-    /// `RESET` / `RESET ALL` — session GUCs are back to the server defaults;
-    /// disarm set-cleanup because the subsequent checkin RESET would be a no-op.
+    /// `RESET` / `RESET ALL` — disarm built-in SET cleanup, or custom SET cleanup
+    /// when pg_doorman itself is resetting the connection.
     DisarmSet,
     /// `CLOSE CURSOR ALL` — no server-side cursors remain; disarm declare-cleanup.
     DisarmDeclare,
@@ -493,8 +493,8 @@ fn drop_prepared_statement_cache_on_reset(server: &mut Server, reason: &'static 
 
 /// Handles CommandComplete ('C') message - indicates successful completion of a command.
 /// Tracks commands that may require cleanup (SET, DECLARE, ...) and disarms the
-/// cleanup flags after DISCARD / DEALLOCATE / CLOSE ALL. A client RESET cannot
-/// disarm SET cleanup: its command tag does not identify which GUC was reset.
+/// cleanup flags after DISCARD / DEALLOCATE / CLOSE ALL. Client RESET suppresses
+/// built-in SET cleanup, but does not replace a configured cleanup query.
 fn handle_command_complete(server: &mut Server, message: &BytesMut) {
     // Exit COPY mode if we were in it
     if server.in_copy_mode {
@@ -510,9 +510,9 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
             server.cleanup_state.needs_cleanup_declare = true;
         }
         CommandCompleteEffect::DisarmSet => {
-            // RESET has the same tag for one GUC and ALL. Keep the configured
-            // cleanup obligation until our own complete batch succeeds.
-            if server.resetting {
+            // Preserve client reset-batch suppression for built-in cleanup.
+            // A configured cleanup query still has to run in full.
+            if !server.custom_cleanup_enabled() || server.resetting {
                 server.cleanup_state.needs_cleanup_set = false;
             }
         }
@@ -864,14 +864,6 @@ where
                 }
                 if server.is_async() {
                     server.decrement_expected();
-                }
-            }
-
-            'N' if server.resetting => {
-                if let Ok(notice) = PgErrorMsg::parse(&message) {
-                    if matches!(notice.code.as_str(), "0A000" | "0AM01") {
-                        server.last_sql_error = Some((notice.code, notice.message));
-                    }
                 }
             }
 
