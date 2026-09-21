@@ -249,6 +249,22 @@ pub(crate) static SHOW_POOLS_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     counter
 });
 
+/// Exactly two result series per configured pool; backend retirement does not
+/// discard the accumulated cleanup outcomes.
+pub(crate) static SERVER_CLEANUP_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "pg_doorman_server_cleanup_total",
+            "Completed backend cleanup attempts per pool, including rollback. \
+             Result is 'ok' or 'error'; skipped cleanup is not counted.",
+        ),
+        &["user", "database", "result"],
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(counter.clone())).unwrap();
+    counter
+});
+
 /// DEPRECATED: monotonic byte counter shipped as a Gauge. Prefer
 /// `pg_doorman_pools_bytes_total`. Scheduled for removal in 3.10.
 pub(crate) static SHOW_POOLS_BYTES: Lazy<GaugeVec> = Lazy::new(|| {

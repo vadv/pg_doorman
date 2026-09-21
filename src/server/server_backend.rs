@@ -12,7 +12,7 @@ use lru::LruCache;
 use tokio::io::{AsyncReadExt, BufStream};
 
 use crate::auth::scram_client::ScramSha256;
-use crate::config::{get_config, tls, Address, BackendAuthMethod, CleanupMode, User};
+use crate::config::{config_arc, get_config, tls, Address, BackendAuthMethod, CleanupMode, User};
 use crate::errors::{Error, ServerIdentifier};
 use crate::messages::PgErrorMsg;
 use crate::messages::{
@@ -407,6 +407,32 @@ impl Server {
     /// Perform any necessary cleanup before putting the server
     /// connection back in the pool
     pub async fn checkin_cleanup(&mut self) -> Result<(), Error> {
+        let result = self.checkin_cleanup_inner().await;
+        if let Err(err) = &result {
+            self.bad = true;
+            warn!(
+                "[{}@{}] server cleanup failed, retiring backend pid={}: {err}",
+                self.address.username, self.address.pool_name, self.process_id
+            );
+        }
+        result
+    }
+
+    /// A maintenance failure must not replace an already completed query result.
+    /// Protocol errors detected before cleanup still propagate to the client.
+    pub(crate) async fn cleanup_after_response(&mut self) -> Result<(), Error> {
+        let response_complete = !self.in_transaction
+            && !self.in_copy_mode
+            && !self.data_available
+            && self.buffer.is_empty()
+            && !self.is_async();
+        match self.checkin_cleanup().await {
+            Err(_) if response_complete => Ok(()),
+            result => result,
+        }
+    }
+
+    async fn checkin_cleanup_inner(&mut self) -> Result<(), Error> {
         self.pending_large_message = None;
         if self.in_copy_mode() {
             warn!(
@@ -441,22 +467,48 @@ impl Server {
                 self.address.host, self.address.database, self.address.username
             )));
         }
+        // The pool retires bad backends; do not send more SQL to them.
+        if self.bad {
+            return Ok(());
+        }
         if self.custom_cleanup_enabled() {
-            // Preserve the completed Sync response; the pool retires bad backends.
-            if self.bad {
-                return Ok(());
-            }
             let needs_cleanup = self.cleanup_state.needs_cleanup()
                 || self.has_pending_cache_entries
                 || !self.deferred_eviction_closes.is_empty()
                 || (self.cleanup_connections == CleanupMode::Always && self.used_since_cleanup);
-            let query = self.cleanup_server_query.clone().filter(|_| needs_cleanup);
+            let query = self
+                .cleanup_server_query
+                .as_ref()
+                .filter(|_| needs_cleanup)
+                .cloned();
             if query.is_some() || self.in_transaction() {
                 return self.reset_with_query(query.as_deref()).await;
             }
             return Ok(());
         }
 
+        let needs_cleanup = self.in_transaction()
+            || (self.cleanup_connections != CleanupMode::Off
+                && (self.cleanup_state.needs_cleanup()
+                    || self.has_pending_cache_entries
+                    || !self.deferred_eviction_closes.is_empty()));
+        if !needs_cleanup {
+            return Ok(());
+        }
+        self.bad = true;
+        self.resetting = true;
+        self.set_async_mode(false);
+        self.reset_expected_responses();
+        let result = self.cleanup_legacy().await;
+        self.resetting = false;
+        self.address.stats.server_cleanup(result.is_ok());
+        if result.is_ok() {
+            self.bad = false;
+        }
+        result
+    }
+
+    async fn cleanup_legacy(&mut self) -> Result<(), Error> {
         // Client disconnected with an open transaction on the server connection.
         // Pgbouncer behavior is to close the server connection but that can cause
         // server connection thrashing if clients repeatedly do this.
@@ -496,8 +548,9 @@ impl Server {
                 self.address.username, self.address.pool_name, self.process_id, self.cleanup_state
             );
             let mut reset_string = String::from("RESET ROLE;");
+            let reset_all = self.cleanup_state.needs_cleanup_set;
 
-            if self.cleanup_state.needs_cleanup_set {
+            if reset_all {
                 reset_string.push_str("RESET ALL;");
             };
 
@@ -510,17 +563,10 @@ impl Server {
             };
 
             self.small_simple_query(&reset_string).await?;
-            if self.cleanup_state.needs_cleanup_prepare {
-                // flush prepared.
-                self.registering_prepared_statement.clear();
-                if self.prepared_statement_cache.is_some() {
-                    let cache_size = self.prepared_statement_cache.as_ref().unwrap().len();
-                    info!(
-                        "[{}@{}] clearing prepared statement cache pid={}: session state reset ({} entries)",
-                        self.address.username, self.address.pool_name, self.process_id, cache_size
-                    );
-                    self.prepared_statement_cache.as_mut().unwrap().clear();
-                }
+            if reset_all {
+                self.server_parameters.forget_untracked();
+            } else {
+                self.server_parameters.remove_param("role");
             }
             self.cleanup_state.reset();
         }
@@ -539,7 +585,7 @@ impl Server {
         self.resetting = true;
         self.set_async_mode(false);
         self.reset_expected_responses();
-        let result = tokio::time::timeout(get_config().general.connect_timeout.as_std(), async {
+        let result = tokio::time::timeout(config_arc().general.connect_timeout.as_std(), async {
             if self.in_transaction {
                 self.small_simple_query("ROLLBACK").await?;
                 if self.in_transaction {
@@ -558,9 +604,12 @@ impl Server {
             }
             Ok(())
         })
-        .await;
+        .await
+        .map_err(|_| Error::QueryError("backend reset timed out".into()))
+        .and_then(|result| result);
         self.resetting = false;
-        result.map_err(|_| Error::QueryError("backend reset timed out".into()))??;
+        self.address.stats.server_cleanup(result.is_ok());
+        result?;
         if query.is_some() {
             self.registering_prepared_statement.clear();
             self.has_pending_cache_entries = false;

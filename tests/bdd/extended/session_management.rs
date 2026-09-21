@@ -811,6 +811,19 @@ pub async fn store_response_backend_pid(world: &mut DoormanWorld, session_name: 
     world.session_backend_pids.insert(session_name, pid);
 }
 
+#[when(regex = r#"^we store backend_pid from last response of session "([^"]+)" as "([^"]+)"$"#)]
+pub async fn store_named_backend_pid_from_response(
+    world: &mut DoormanWorld,
+    session_name: String,
+    pid_name: String,
+) {
+    store_response_backend_pid(world, session_name.clone()).await;
+    let pid = world.session_backend_pids[&session_name];
+    world
+        .named_backend_pids
+        .insert((session_name, pid_name), pid);
+}
+
 #[then(regex = r#"^session "([^"]+)" should receive exactly one DataRow "([^"]+)"$"#)]
 pub async fn session_should_receive_exact_row(
     world: &mut DoormanWorld,
@@ -825,36 +838,6 @@ pub async fn session_should_receive_exact_row(
     let expected = world.replace_placeholders(&expected);
     let fields: Vec<_> = expected.split('|').collect();
     assert_eq!(rows, vec![fields], "Unexpected DataRows for {session_name}");
-}
-
-#[when(regex = r#"^we send Sync to session "([^"]+)" expecting connection close$"#)]
-pub async fn send_sync_expecting_close(world: &mut DoormanWorld, session_name: String) {
-    let conn = super::helpers::get_session(&mut world.named_sessions, &session_name);
-    conn.send_sync().await.expect("Failed to send Sync");
-    timeout(Duration::from_secs(5), async {
-        loop {
-            match conn.read_message().await {
-                Ok((tag, data)) => {
-                    assert_ne!(
-                        tag, 'Z',
-                        "Failed cleanup must not return ReadyForQuery: {data:?}"
-                    );
-                }
-                Err(err) => {
-                    assert!(
-                        matches!(
-                            err.kind(),
-                            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
-                        ),
-                        "Unexpected read failure: {err}"
-                    );
-                    break;
-                }
-            }
-        }
-    })
-    .await
-    .expect("Connection did not close after failed cleanup");
 }
 
 #[when(regex = r#"^we send Sync to session "([^"]+)"$"#)]
