@@ -1421,11 +1421,12 @@ fields:
         resources. It must not leave a transaction open or enter COPY mode. An error or a `connect_timeout` timeout
         closes the server connection.
 
-        A good example is `cleanup_server_query = "DISCARD ALL"`. In PostgreSQL it is one command equivalent to
-        `CLOSE ALL; SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; UNLISTEN *;
-        SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP`, and it is also
-        PgBouncer's default `server_reset_query`. It is broader than the built-in cleanup: it adds `UNLISTEN`,
-        advisory locks, temporary tables, plans and sequence state.
+        A good example is `cleanup_server_query = "DISCARD ALL"`, the query PgBouncer keeps as its default
+        `server_reset_query`. In PostgreSQL it is one command equivalent to `CLOSE ALL;
+        SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; UNLISTEN *;
+        SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP`, so it is broader
+        than the built-in cleanup: it adds `UNLISTEN`, advisory locks, temporary tables, plans and sequence
+        state.
         Example for Greengage 7, where `DISCARD ALL` leaves temporary tables on segments:
 
         ```sql

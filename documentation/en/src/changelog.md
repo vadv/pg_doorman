@@ -1,18 +1,6 @@
 # Changelog
 
-### 3.11.2
-
-#### Talos routes `s2i|`-prefixed clients through a service pool
-
-For `user=talos`, the pool-user selection now also understands
-`s2i|`-prefixed `clientId`s. In addition to `clientId`, `srv-<clientId>`
-and the max token role (`owner`, `read_write`, `read_only`), pg_doorman
-checks a pool user named `srv-<service-name>` where `service-name` is
-the part of the `clientId` after the `|` separator. For a `clientId` of
-`s2i|test-service` the pool user checked is `srv-test-service`.
-
-Selection order: `clientId`, `srv-<clientId>`, `srv-<service-name>`
-(for `s2i|`-prefixed `clientId`), then the max token role. 
+### 3.12.0
 
 #### Configurable backend cleanup: `cleanup_server_connections` modes and `cleanup_server_query`
 
@@ -25,10 +13,10 @@ Legacy `false` and `true` keep working and mean `off` and `adaptive`.
 - `off`: no session cleanup. ROLLBACK of an unfinished transaction still runs.
 
 `cleanup_server_query` replaces the built-in `RESET ROLE` / `RESET ALL` / `DEALLOCATE ALL` /
-`CLOSE ALL` sequence with your own SQL. A good example is `DISCARD ALL`, which is also PgBouncer's
-default `server_reset_query`. The two settings are validated as a pair for every pool, using the
-inherited value when the pool does not set its own: `always` without a query is an error, and a query
-with an effective `adaptive` mode is an error.
+`CLOSE ALL` sequence with your own SQL. A good example is PgBouncer's default `server_reset_query`,
+`DISCARD ALL`. The two settings are validated as a pair for every pool, using the inherited value when
+the pool does not set its own: `always` without a query is an error, and a query with an effective
+`adaptive` mode is an error.
 
 ```toml
 [general]
@@ -42,6 +30,20 @@ not suppress it; in `adaptive` a client that cleaned up after itself still does.
 `pg_doorman_server_cleanup_total` counts cleanup attempts per pool with `result="ok"` or
 `result="error"`. Pool-level `cleanup_server_connections` became optional in the config dump, so
 `SHOW` and config dumps omit the field when the pool does not set it.
+
+### 3.11.2
+
+#### Talos routes `s2i|`-prefixed clients through a service pool
+
+For `user=talos`, the pool-user selection now also understands
+`s2i|`-prefixed `clientId`s. In addition to `clientId`, `srv-<clientId>`
+and the max token role (`owner`, `read_write`, `read_only`), pg_doorman
+checks a pool user named `srv-<service-name>` where `service-name` is
+the part of the `clientId` after the `|` separator. For a `clientId` of
+`s2i|test-service` the pool user checked is `srv-test-service`.
+
+Selection order: `clientId`, `srv-<clientId>`, `srv-<service-name>`
+(for `s2i|`-prefixed `clientId`), then the max token role. 
 
 ### 3.11.1
 

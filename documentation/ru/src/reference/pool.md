@@ -89,11 +89,11 @@ SQL вместо встроенной очистки. Выполняется п�
 Он не должен оставлять открытую транзакцию или переходить в COPY.
 Ошибка выполнения или таймаут `connect_timeout` закрывают серверное соединение.
 
-Для PostgreSQL хороший пример — `cleanup_server_query = "DISCARD ALL"`. В PostgreSQL это одна команда,
-равная набору `CLOSE ALL; SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; UNLISTEN *;
-SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP`, и она же стоит в
-PgBouncer по умолчанию как `server_reset_query`. Она шире встроенной очистки: добавляет `UNLISTEN`,
-advisory-блокировки, временные таблицы, планы и состояние последовательностей.
+Хороший пример — `cleanup_server_query = "DISCARD ALL"`, тот же запрос PgBouncer держит по умолчанию как
+`server_reset_query`. В PostgreSQL `DISCARD ALL` равна набору `CLOSE ALL; SET SESSION AUTHORIZATION DEFAULT;
+RESET ALL; DEALLOCATE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES;
+DISCARD TEMP`, поэтому она шире встроенной очистки: добавляет `UNLISTEN`, advisory-блокировки, временные
+таблицы, планы и состояние последовательностей.
 Пример для Greengage 7, где `DISCARD ALL` оставляет временные таблицы на сегментах:
 
 ```sql
