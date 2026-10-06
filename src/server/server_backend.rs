@@ -478,19 +478,22 @@ impl Server {
             return Ok(());
         }
 
-        let needs_cleanup = self.in_transaction()
-            || (self.cleanup_connections != CleanupMode::Off
-                && (self.cleanup_state.needs_cleanup()
-                    || self.has_pending_cache_entries
-                    || !self.deferred_eviction_closes.is_empty()));
-        if !needs_cleanup {
+        // off: only the ROLLBACK of a transaction the client left open.
+        // adaptive: that ROLLBACK plus the built-in session reset, and only when
+        // pg_doorman saw the session state change.
+        let needs_rollback = self.in_transaction();
+        let needs_session_reset = self.cleanup_connections != CleanupMode::Off
+            && (self.cleanup_state.needs_cleanup()
+                || self.has_pending_cache_entries
+                || !self.deferred_eviction_closes.is_empty());
+        if !needs_rollback && !needs_session_reset {
             return Ok(());
         }
         self.bad = true;
         self.resetting = true;
         self.set_async_mode(false);
         self.reset_expected_responses();
-        let result = self.cleanup_legacy().await;
+        let result = self.cleanup_builtin(needs_session_reset).await;
         self.resetting = false;
         self.address.stats.server_cleanup(result.is_ok());
         if result.is_ok() {
@@ -499,7 +502,10 @@ impl Server {
         result
     }
 
-    async fn cleanup_legacy(&mut self) -> Result<(), Error> {
+    /// Built-in cleanup. The ROLLBACK runs in every mode. The RESET sequence runs
+    /// only when `session_reset` is set, so `CleanupMode::Off` reaches here with an
+    /// open transaction and the ROLLBACK is the whole cleanup.
+    async fn cleanup_builtin(&mut self, session_reset: bool) -> Result<(), Error> {
         // Client disconnected with an open transaction on the server connection.
         // Pgbouncer behavior is to close the server connection but that can cause
         // server connection thrashing if clients repeatedly do this.
@@ -533,7 +539,7 @@ impl Server {
         // to avoid leaking state between clients. For performance reasons we only
         // send `RESET ALL` if we think the session is altered instead of just sending
         // it before each checkin.
-        if self.cleanup_state.needs_cleanup() && self.cleanup_connections != CleanupMode::Off {
+        if session_reset {
             info!(
                 "[{}@{}] session state cleanup pid={}: {}",
                 self.address.username, self.address.pool_name, self.process_id, self.cleanup_state
