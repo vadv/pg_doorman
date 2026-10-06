@@ -466,10 +466,17 @@ impl ServerPool {
             _ => false,
         };
         let (result, active_registration) = if should_tls_retry {
+            // Read before the retry shadows `result`: the plain attempt itself
+            // logs nothing, so this is the only place its failure survives.
+            let plain_error = result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default();
             info!(
-                "plain connection rejected, retrying with tls, user={} pool={} host={} port={} server_tls_mode=allow",
+                "plain connection rejected, retrying with tls, user={} pool={} host={} port={} server_tls_mode=allow err={}",
                 self.address.username, self.address.pool_name,
-                self.address.host, self.address.port,
+                self.address.host, self.address.port, plain_error,
             );
             // The plain attempt ended; keep only the TLS retry row visible.
             drop(registration);
@@ -1091,12 +1098,18 @@ impl ServerPool {
             _ => false,
         };
         let (result, active_registration) = if should_tls_retry {
+            let plain_error = result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_default();
             info!(
-                "[{}@{}] fallback: plain connection to {}:{} rejected, retrying with tls",
+                "[{}@{}] fallback: plain connection to {}:{} rejected, retrying with tls, err={}",
                 self.address.username,
                 self.address.pool_name,
                 fallback_address.host,
                 fallback_address.port,
+                plain_error,
             );
             // The plain candidate ended; keep only the TLS retry row visible.
             drop(registration);
