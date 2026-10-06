@@ -824,11 +824,17 @@ impl Config {
 
         for (name, pool) in &mut self.pools {
             pool.validate().await?;
-            if pool.effective_cleanup_server_connections(&self.general) == CleanupMode::Always
-                && pool.effective_cleanup_server_query(&self.general).is_none()
-            {
+            let mode = pool.effective_cleanup_server_connections(&self.general);
+            let query = pool.effective_cleanup_server_query(&self.general);
+            if mode == CleanupMode::Always && query.is_none() {
                 return Err(Error::BadConfig(format!(
                     "pools.{name}.cleanup_server_connections = always requires cleanup_server_query"
+                )));
+            }
+            if mode == CleanupMode::Adaptive && query.is_some() {
+                return Err(Error::BadConfig(format!(
+                    "pools.{name}.cleanup_server_query requires cleanup_server_connections = always; \
+                     adaptive uses built-in cleanup only"
                 )));
             }
         }

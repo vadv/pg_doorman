@@ -56,7 +56,7 @@ Useful when one user (operations tooling, migrations) needs session semantics bu
 
 The default is `cleanup_server_connections: adaptive` without `cleanup_server_query`. This preserves prepared statements when cleanup is unnecessary and suits PostgreSQL OLTP workloads.
 
-`cleanup_server_query` replaces the built-in cleanup commands. In `adaptive`, it runs when cleanup is needed; in `always`, on every return of a used connection. `always` requires a configured query, adds server work, and can require preparing statements again. `off` disables session cleanup; open transactions are rolled back in every mode.
+`cleanup_server_query` replaces the built-in cleanup commands and requires `always`: it runs on every return of a used connection. Pairing it with `adaptive` is a configuration error. `always` adds server work and can require preparing statements again. `off` disables session cleanup; open transactions are rolled back in every mode.
 
 `adaptive` does not guarantee complete session cleanup. To clean up temporary objects, `LISTEN` subscriptions, or session advisory locks, use `always` with SQL that releases those resources.
 

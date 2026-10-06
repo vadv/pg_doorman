@@ -817,11 +817,11 @@ fields:
         en: |
           Default session cleanup mode: off, adaptive, or always.
           Adaptive avoids cleanup SQL for ordinary queries and cached prepared statements.
-          Always requires cleanup_server_query. Legacy false/true mean off/adaptive.
+          Always requires cleanup_server_query, adaptive rejects it. Legacy false/true mean off/adaptive.
         ru: |
           Режим очистки сессии по умолчанию: off, adaptive или always.
           Adaptive не добавляет SQL очистки для обычных запросов и кешируемых prepared statements.
-          Always требует cleanup_server_query. Старые false/true означают off/adaptive.
+          Always требует cleanup_server_query, adaptive его не принимает. Старые false/true означают off/adaptive.
       doc: |
         Default session cleanup mode: `off`, `adaptive`, or `always`.
         Legacy `false` and `true` mean `off` and `adaptive`.
@@ -830,10 +830,10 @@ fields:
 
     cleanup_server_query:
       config:
-        en: "Custom session cleanup SQL. Required for always; replaces built-in cleanup in adaptive."
-        ru: "SQL для очистки сессии. Обязателен для always; заменяет встроенную очистку в adaptive."
+        en: "Custom session cleanup SQL. Required for always; not allowed with adaptive."
+        ru: "SQL для очистки сессии. Обязателен для always; не допускается с adaptive."
       doc: |
-        Session cleanup SQL, required for `always`. Pools can override it independently of the cleanup mode.
+        Session cleanup SQL, used by `always` only. Configuring it together with `adaptive` is a configuration error.
         See [pool settings](pool.md#cleanup_server_query) for examples and SQL requirements.
       default: "None (built-in adaptive cleanup)"
 
@@ -1406,13 +1406,15 @@ fields:
       config:
         en: |
           Override general.cleanup_server_query with custom session cleanup SQL.
-          Replaces built-in cleanup in adaptive; required for always; ignored in off.
+          Requires cleanup_server_connections = always; adaptive rejects it; off does not use it.
         ru: |
           SQL для очистки сессии вместо general.cleanup_server_query.
-          Заменяет встроенную очистку в adaptive; обязателен для always; не используется в off.
+          Требует cleanup_server_connections = always; adaptive его не принимает; в off не используется.
       doc: |
-        SQL that replaces built-in cleanup. Runs as needed in `adaptive`, unconditionally in `always`, and never in `off`.
-        Inherits `general.cleanup_server_query`; if neither is set, `adaptive` uses built-in cleanup.
+        SQL that replaces built-in cleanup. It runs unconditionally in `always` and requires the effective mode to be `always`:
+        a pool left in `adaptive` with an own or inherited `cleanup_server_query` is a configuration error.
+        In `off` the query is not used.
+        A pool inherits `general.cleanup_server_query` unless it sets its own.
 
         The query must reset session parameters and release prepared statements, cursors and other application resources.
         An error or a `connect_timeout` timeout closes the server connection.
@@ -1448,21 +1450,20 @@ fields:
       doc: |
         Session cleanup mode:
 
-        - `adaptive` (default): cleanup based on session state changes. Ordinary queries, including cached prepared statements, do not require extra SQL.
+        - `adaptive` (default): built-in cleanup based on session state changes. Ordinary queries, including cached prepared statements, do not require extra SQL. It does not accept `cleanup_server_query`.
         - `always`: unconditional execution of `cleanup_server_query`. The query is required.
         - `off`: no session cleanup. ROLLBACK of an unfinished transaction is unaffected.
 
         Built-in cleanup uses `RESET ROLE` and, as needed, `RESET ALL`, `DEALLOCATE ALL` and `CLOSE ALL`.
         After a client reset batch containing `RESET ALL` (such as pgx's), built-in cleanup does not add another `RESET ALL`.
-        Use `cleanup_server_query` to supply your own SQL.
 
         Limitations of `adaptive`:
 
-        - SQL `PREPARE`, temporary objects, `LISTEN`, advisory locks and function side effects are not independently tracked. To clean these resources unconditionally, use `always` with suitable SQL.
-        - PostgreSQL returns the same `RESET` tag for all parameters and a single parameter. Without `cleanup_server_query`, even a single-parameter reset cancels the subsequent `RESET ALL`, so other changed parameters may remain set.
-        - With `cleanup_server_query`, client `RESET` and `DISCARD ALL` do not replace the configured cleanup.
+        - SQL `PREPARE`, `LISTEN`, advisory locks and function side effects are not tracked at all. Temporary objects are not tracked either: `CREATE TEMP TABLE` reports the `CREATE TABLE AS` tag and `SELECT ... INTO` reports `SELECT INTO`, and neither arms cleanup. To clean these resources unconditionally, use `always` with suitable SQL.
+        - PostgreSQL returns the same `RESET` tag for all parameters and a single parameter, so even a single-parameter reset cancels the subsequent `RESET ALL`, and other changed parameters may remain set.
+        - In `always`, client `RESET` and `DISCARD ALL` do not suppress the configured cleanup.
 
-        Mode and query inherit independently from `general`. Legacy `true` and `false` mean `adaptive` and `off`.
+        Mode and query inherit independently from `general`, and the pair is validated together: `always` requires a query, `adaptive` rejects one. Legacy `true` and `false` mean `adaptive` and `off`.
         Policy changes through `RELOAD` apply to new client connections.
       default: "None (uses global setting)"
 

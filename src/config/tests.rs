@@ -2294,4 +2294,25 @@ async fn cleanup_policy_inheritance_validation_and_pool_hash() {
             matches!(config.validate().await, Err(Error::BadConfig(message)) if message.contains("cleanup_server_query"))
         );
     }
+
+    // A query belongs to `always` only. An adaptive pool rejects its own or an
+    // inherited query instead of silently changing the cleanup mode.
+    config.general.cleanup_server_connections = CleanupMode::Adaptive;
+    config.general.cleanup_server_query = Some("DISCARD ALL".into());
+    config
+        .pools
+        .get_mut("test")
+        .unwrap()
+        .cleanup_server_connections = Some(CleanupMode::Adaptive);
+    config.pools.get_mut("test").unwrap().cleanup_server_query = None;
+    assert!(
+        matches!(config.validate().await, Err(Error::BadConfig(message))
+            if message.contains("pools.test.cleanup_server_query") && message.contains("requires cleanup_server_connections = always"))
+    );
+    config.general.cleanup_server_query = None;
+    config.pools.get_mut("test").unwrap().cleanup_server_query = Some("DISCARD ALL".into());
+    assert!(
+        matches!(config.validate().await, Err(Error::BadConfig(message))
+            if message.contains("pools.test.cleanup_server_query") && message.contains("requires cleanup_server_connections = always"))
+    );
 }

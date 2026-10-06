@@ -286,11 +286,11 @@ general:
 
   # Default session cleanup mode: off, adaptive, or always.
   # Adaptive avoids cleanup SQL for ordinary queries and cached prepared statements.
-  # Always requires cleanup_server_query. Legacy false/true mean off/adaptive.
+  # Always requires cleanup_server_query, adaptive rejects it. Legacy false/true mean off/adaptive.
   # Default: "adaptive"
   cleanup_server_connections: "adaptive"
 
-  # Custom session cleanup SQL. Required for always; replaces built-in cleanup in adaptive.
+  # Custom session cleanup SQL. Required for always; not allowed with adaptive.
   # Default: None (built-in adaptive cleanup)
   # cleanup_server_query: "DISCARD ALL"
 
@@ -622,7 +622,7 @@ pools:
     # cleanup_server_connections: "adaptive"
 
     # Override general.cleanup_server_query with custom session cleanup SQL.
-    # Replaces built-in cleanup in adaptive; required for always; ignored in off.
+    # Requires cleanup_server_connections = always; adaptive rejects it; off does not use it.
     # Default: None (uses global setting)
     # cleanup_server_query: "DISCARD ALL"
 
