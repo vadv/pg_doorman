@@ -885,6 +885,10 @@ where
                             // checkin_cleanup before give server to client.
                             match conn.checkin_cleanup().await {
                                 Ok(()) => break conn,
+                                // The error is already logged by checkin_cleanup, which also
+                                // marks the backend bad. Dropping `conn` closes it, so the
+                                // checkout retries with the next candidate instead of
+                                // reporting a pool failure to the client.
                                 Err(_) => continue,
                             };
                         }
