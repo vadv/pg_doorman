@@ -410,6 +410,8 @@ impl Server {
         let result = self.checkin_cleanup_inner().await;
         if let Err(err) = &result {
             self.bad = true;
+            // Protocol guards already reported their reason through mark_bad. A cleanup
+            // query failure has no other report, so this line covers both cases.
             warn!(
                 "[{}@{}] server cleanup failed, retiring backend pid={}: {err}",
                 self.address.username, self.address.pool_name, self.process_id
@@ -435,10 +437,6 @@ impl Server {
     async fn checkin_cleanup_inner(&mut self) -> Result<(), Error> {
         self.pending_large_message = None;
         if self.in_copy_mode() {
-            warn!(
-                "[{}@{}] server returned in copy-mode pid={}",
-                self.address.username, self.address.pool_name, self.process_id
-            );
             self.mark_bad("returned in copy-mode");
             return Err(Error::ProtocolSyncError(format!(
                 "Protocol synchronization error: Server {} (database: {}, user: {}) was returned to the pool while still in COPY mode. This may indicate a client disconnected during a COPY operation.",
@@ -446,10 +444,6 @@ impl Server {
             )));
         }
         if self.is_data_available() {
-            warn!(
-                "[{}@{}] server returned with data available pid={}",
-                self.address.username, self.address.pool_name, self.process_id
-            );
             self.mark_bad("returned with data available");
             return Err(Error::ProtocolSyncError(format!(
                 "Protocol synchronization error: Server {} (database: {}, user: {}) was returned to the pool while still having data available. This may indicate a client disconnected before receiving all query results.",
@@ -457,11 +451,7 @@ impl Server {
             )));
         }
         if !self.buffer.is_empty() {
-            warn!(
-                "[{}@{}] server returned with non-empty buffer pid={}",
-                self.address.username, self.address.pool_name, self.process_id
-            );
-            self.mark_bad("returned with not-empty buffer");
+            self.mark_bad("returned with non-empty buffer");
             return Err(Error::ProtocolSyncError(format!(
                 "Protocol synchronization error: Server {} (database: {}, user: {}) was returned to the pool with a non-empty buffer. This may indicate a client disconnected before the server response was fully processed.",
                 self.address.host, self.address.database, self.address.username
