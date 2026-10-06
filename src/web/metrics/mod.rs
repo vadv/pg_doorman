@@ -254,8 +254,11 @@ pub(crate) static SERVER_CLEANUP_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     let counter = IntCounterVec::new(
         Opts::new(
             "pg_doorman_server_cleanup_total",
-            "Completed backend cleanup attempts per pool, including rollback. \
-             Result is 'ok' or 'error'; skipped cleanup is not counted.",
+            "Backend cleanup attempts per pool and user. Counted once when pg_doorman sent cleanup \
+             SQL to the backend: the built-in sequence in 'adaptive', cleanup_server_query in \
+             'always', or a ROLLBACK of a transaction the client left open. In 'off' only that \
+             ROLLBACK is counted. Result is 'ok' or 'error'; 'error' means the backend was retired. \
+             Checkins that needed no cleanup are not counted. The 'database' label is the pool name.",
         ),
         &["user", "database", "result"],
     )
