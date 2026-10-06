@@ -264,6 +264,12 @@ impl Pool {
             .or(general.cleanup_server_query.as_deref())
     }
 
+    pub fn effective_connect_timeout(&self, general: &super::General) -> std::time::Duration {
+        self.connect_timeout
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(general.connect_timeout.as_std())
+    }
+
     pub async fn validate(&mut self) -> Result<(), Error> {
         if let Some(query) = &self.cleanup_server_query {
             super::validate_cleanup_server_query(query)?;

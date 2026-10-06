@@ -585,7 +585,13 @@ impl Server {
         self.resetting = true;
         self.set_async_mode(false);
         self.reset_expected_responses();
-        let result = tokio::time::timeout(config_arc().general.connect_timeout.as_std(), async {
+        let config = config_arc();
+        let timeout = config
+            .pools
+            .get(&self.address.pool_name)
+            .map(|pool| pool.effective_connect_timeout(&config.general))
+            .unwrap_or(config.general.connect_timeout.as_std());
+        let result = tokio::time::timeout(timeout, async {
             if self.in_transaction {
                 self.small_simple_query("ROLLBACK").await?;
                 if self.in_transaction {

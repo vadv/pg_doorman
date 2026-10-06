@@ -1415,7 +1415,7 @@ fields:
         Inherits `general.cleanup_server_query`; if neither is set, `adaptive` uses built-in cleanup.
 
         The query must reset session parameters and release prepared statements, cursors and other application resources.
-        An error or a `general.connect_timeout` timeout closes the server connection.
+        An error or a `connect_timeout` timeout closes the server connection.
         The query must not leave a transaction open or enter COPY mode.
 
         For PostgreSQL: `cleanup_server_query = "DISCARD ALL"`.
