@@ -1411,7 +1411,7 @@ fields:
           Requires cleanup_server_connections = always; off does not use it.
         ru: |
           SQL очистки сессии вместо general.cleanup_server_query.
-          Требует cleanup_server_connections = always; в off не используется.
+          Требует cleanup_server_connections = always. В off не используется.
       doc: |
         SQL that replaces built-in cleanup. It runs on every checkin of a backend that served a client, and the
         effective mode must be `always`: a pool in `adaptive` with its own or an inherited query is a configuration

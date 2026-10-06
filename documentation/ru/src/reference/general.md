@@ -369,7 +369,7 @@ TCP backlog для входящих соединений. При значени�
 ### cleanup_server_query
 
 SQL очистки сессии для режима `always`. По умолчанию не задан.
-Пулы наследуют его из `general`; собственный запрос требует `cleanup_server_connections = always`.
+Пулы наследуют его из `general`. Собственный запрос требует `cleanup_server_connections = always`.
 Примеры и требования к SQL описаны в [настройках пула](pool.md#cleanup_server_query).
 
 ### sync_server_parameters

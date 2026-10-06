@@ -56,7 +56,7 @@ Useful when one user (operations tooling, migrations) needs session semantics bu
 
 The default is `cleanup_server_connections: adaptive` without `cleanup_server_query`: pg_doorman cleans a session only when it sees the session state change, so prepared statements survive a checkin. This suits PostgreSQL OLTP workloads.
 
-`cleanup_server_query` replaces the built-in cleanup and requires `always`: your SQL runs on every checkin of a backend that served a client. It is incompatible with `adaptive`, and validation rejects that pairing. `always` adds server work and can force clients to prepare statements again. `off` disables session cleanup; open transactions are rolled back in every mode.
+`cleanup_server_query` replaces the built-in cleanup and requires `always`: your SQL runs on every checkin of a backend that served a client. It is incompatible with `adaptive`, and validation rejects that pairing. The mode costs the server one extra query per checkin. pg_doorman re-prepares its own cached prepared statements, but it does not track client-side `PREPARE name` and `EXECUTE name`, so a query that releases them makes the next `EXECUTE` fail. `off` disables session cleanup. Open transactions are rolled back in every mode.
 
 `adaptive` does not guarantee a fully clean session: temporary objects, `LISTEN` subscriptions and advisory locks are released only by `always` with suitable SQL.
 
