@@ -104,7 +104,7 @@ pub struct AddressStats {
     /// new shard entry under a brief write lock.
     pub errors_by_sqlstate: DashMap<String, AtomicU64>,
 
-    /// Completed backend cleanup attempts, retained when individual backends close.
+    /// Cleanup attempt counters shared by every backend of this address.
     pub(crate) server_cleanup_ok: AtomicU64,
     pub(crate) server_cleanup_error: AtomicU64,
 
@@ -238,7 +238,7 @@ impl IntoIterator for &AddressStats {
 }
 
 impl AddressStats {
-    /// Record one actual cleanup attempt after its SQL or transport outcome is known.
+    /// Counts a cleanup attempt that reached the backend; skipped cleanup is not counted.
     #[inline]
     pub fn server_cleanup(&self, success: bool) {
         let counter = if success {

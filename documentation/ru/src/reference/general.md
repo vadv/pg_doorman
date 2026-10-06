@@ -362,14 +362,14 @@ TCP backlog для входящих соединений. При значени�
 
 ### cleanup_server_connections
 
-Режим очистки сессии по умолчанию: `off`, `adaptive` или `always`. По умолчанию `adaptive`.
+Режим очистки сессии по умолчанию: `off`, `adaptive` или `always`. Применяется ко всем пулам, если пул не переопределил его.
 Старые значения `false` и `true` означают `off` и `adaptive`.
 Выбор режима и ограничения описаны в [настройках пула](pool.md#cleanup_server_connections).
 
 ### cleanup_server_query
 
-SQL для очистки сессии, обязательный для `always`. По умолчанию не задан.
-Пул может переопределить запрос независимо от режима очистки.
+SQL очистки сессии для режима `always`. По умолчанию не задан.
+Пулы наследуют его из `general`; собственный запрос требует `cleanup_server_connections = always`.
 Примеры и требования к SQL описаны в [настройках пула](pool.md#cleanup_server_query).
 
 ### sync_server_parameters

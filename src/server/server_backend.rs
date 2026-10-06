@@ -112,7 +112,7 @@ pub struct Server {
     cleanup_connections: CleanupMode,
 
     pub(crate) cleanup_server_query: Option<String>,
-    // Only client traffic arms Always; internal queries do not start another lease.
+    // Backends that served client traffic in `always` mode are reset on checkin.
     used_since_cleanup: bool,
     pub(crate) resetting: bool,
 
@@ -472,10 +472,6 @@ impl Server {
             return Ok(());
         }
         if self.custom_cleanup_enabled() {
-            // A configured query runs only in `always`, and there every backend
-            // that served a client is reset: what adaptive tracking observed does
-            // not matter. The other terms cover pg_doorman state left behind
-            // without client traffic, such as the prepared statement cache.
             let needs_cleanup = (self.cleanup_connections == CleanupMode::Always
                 && self.used_since_cleanup)
                 || self.cleanup_state.needs_cleanup()
@@ -580,8 +576,6 @@ impl Server {
         Ok(())
     }
 
-    /// Config validation pairs a query with `always` only, so a configured query
-    /// means the `always` mode.
     pub(crate) fn custom_cleanup_enabled(&self) -> bool {
         self.cleanup_connections != CleanupMode::Off && self.cleanup_server_query.is_some()
     }

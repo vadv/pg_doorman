@@ -2295,8 +2295,7 @@ async fn cleanup_policy_inheritance_validation_and_pool_hash() {
         );
     }
 
-    // A query belongs to `always` only. An adaptive pool rejects its own or an
-    // inherited query instead of silently changing the cleanup mode.
+    // An adaptive pool rejects its own or an inherited query.
     config.general.cleanup_server_connections = CleanupMode::Adaptive;
     config.general.cleanup_server_query = Some("DISCARD ALL".into());
     config

@@ -36,9 +36,6 @@ use super::parameters::ServerParameters;
 use super::server_backend::Server;
 
 // PostgreSQL CommandComplete message payloads for tracking session state changes.
-//
-// Arm cleanup flags on session mutations and disarm them after client cleanup.
-// Custom cleanup keeps its SET obligation until pg_doorman runs it.
 
 /// `SET` statement CommandComplete tag — arms the `needs_cleanup_set` flag.
 /// Returned for any `SET foo = ...`, including `SET SESSION AUTHORIZATION ...`.
@@ -521,9 +518,8 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
         CommandCompleteEffect::DisarmAll => {
             server.cleanup_state.reset();
             drop_prepared_statement_cache_on_reset(server, "DISCARD ALL");
-            // DISCARD ALL resets every GUC, including startup parameters that never
-            // report ParameterStatus. Drop them from the snapshot so the next
-            // checkout re-applies its own values.
+            // DISCARD ALL also resets startup parameters, which the backend never
+            // reports back. Drop them so the next checkout re-applies its own values.
             if !server.resetting {
                 server.server_parameters.forget_untracked();
             }

@@ -244,13 +244,14 @@ server_round_robin = false
 # Default: false
 sync_server_parameters = false
 
-# Default session cleanup mode: off, adaptive, or always.
-# Adaptive avoids cleanup SQL for ordinary queries and cached prepared statements.
-# Always requires cleanup_server_query, adaptive rejects it. Legacy false/true mean off/adaptive.
+# Session cleanup mode for all pools: off, adaptive, or always.
+# Adaptive runs cleanup SQL only when the session state changed.
+# Always runs cleanup_server_query on every checkin.
+# Legacy false/true mean off/adaptive.
 # Default: "adaptive"
 cleanup_server_connections = "adaptive"
 
-# Custom session cleanup SQL. Required for always; not allowed with adaptive.
+# Session cleanup SQL for the always mode. Not allowed with adaptive.
 # Default: None (built-in adaptive cleanup)
 # cleanup_server_query = "DISCARD ALL"
 
@@ -569,13 +570,13 @@ pool_mode = "transaction"
 # server_lifetime = 300000
 
 # Override general.cleanup_server_connections: off, adaptive, or always.
-# Adaptive avoids cleanup SQL for ordinary queries and cached prepared statements.
-# Always requires cleanup_server_query. Off does not disable ROLLBACK.
+# Adaptive runs cleanup SQL only when the session state changed.
+# Always runs cleanup_server_query on every checkin. Off does not disable ROLLBACK.
 # Default: None (uses global setting)
 # cleanup_server_connections = "adaptive"
 
 # Override general.cleanup_server_query with custom session cleanup SQL.
-# Requires cleanup_server_connections = always; adaptive rejects it; off does not use it.
+# Requires cleanup_server_connections = always; off does not use it.
 # Default: None (uses global setting)
 # cleanup_server_query = "DISCARD ALL"
 

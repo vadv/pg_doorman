@@ -249,8 +249,7 @@ pub(crate) static SHOW_POOLS_ERRORS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     counter
 });
 
-/// Exactly two result series per configured pool; backend retirement does not
-/// discard the accumulated cleanup outcomes.
+/// Counted per user and database in a static registry: retiring a backend does not reset the totals.
 pub(crate) static SERVER_CLEANUP_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     let counter = IntCounterVec::new(
         Opts::new(
