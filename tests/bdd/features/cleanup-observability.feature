@@ -82,14 +82,14 @@ Feature: Backend cleanup observability
 
     Examples:
       | mode     | query_config                                      | client_query            | ok | error | log_expectation  |
-      | adaptive | cleanup_server_query: "DISCARD ALL"               | SET work_mem = '96MB'   | 1  | 0     | does not contain |
+      | always   | cleanup_server_query: "DISCARD ALL"               | SET work_mem = '96MB'   | 1  | 0     | does not contain |
       | always   | cleanup_server_query: "DISCARD ALL"               | SELECT 1                | 1  | 0     | does not contain |
-      | adaptive | cleanup_server_query: "DISCARD ALL"               | SELECT 1                | 0  | 0     | does not contain |
+      | adaptive |                                                   | SELECT 1                | 0  | 0     | does not contain |
       | off      | cleanup_server_query: "DISCARD ALL"               | SET work_mem = '96MB'   | 0  | 0     | does not contain |
-      | adaptive | cleanup_server_query: "SELECT 1 / 0"              | SET work_mem = '96MB'   | 0  | 1     | contains         |
-      | adaptive | cleanup_server_query: "/* empty reset */"         | SET work_mem = '96MB'   | 0  | 1     | contains         |
-      | adaptive | cleanup_server_query: "SELECT pg_sleep(5)"        | SET work_mem = '96MB'   | 0  | 1     | contains         |
-      | adaptive | cleanup_server_query: "DISCARD ALL"               | BEGIN; SELECT 1         | 1  | 0     | does not contain |
+      | always   | cleanup_server_query: "SELECT 1 / 0"              | SET work_mem = '96MB'   | 0  | 1     | contains         |
+      | always   | cleanup_server_query: "/* empty reset */"         | SET work_mem = '96MB'   | 0  | 1     | contains         |
+      | always   | cleanup_server_query: "SELECT pg_sleep(5)"        | SET work_mem = '96MB'   | 0  | 1     | contains         |
+      | always   | cleanup_server_query: "DISCARD ALL"               | BEGIN; SELECT 1         | 1  | 0     | does not contain |
       | adaptive |                                                   | SET work_mem = '96MB'   | 1  | 0     | does not contain |
       | adaptive |                                                   | BEGIN; SELECT 1         | 1  | 0     | does not contain |
 

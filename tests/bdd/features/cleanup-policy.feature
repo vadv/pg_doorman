@@ -19,6 +19,7 @@ Feature: Backend cleanup policy
         admin_username: admin
         admin_password: admin
         connect_timeout: 1000
+        cleanup_server_connections: always
         cleanup_server_query: "<reset_query>"
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
       pools:
@@ -67,6 +68,7 @@ Feature: Backend cleanup policy
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
         prepared_statements: true
         sync_server_parameters: true
+        cleanup_server_connections: always
         cleanup_server_query: "SELECT 1 / 0"
       pools:
         example_db:
@@ -85,7 +87,8 @@ Feature: Backend cleanup policy
     Then session "one" should receive DataRow with "11"
     And session "one" should receive ReadyForQuery "I"
     When we send SimpleQuery "SELECT count(*) FROM pg_prepared_statements" to session "one" and store response
-    Then session "one" should receive DataRow with "1"
+    # `always` already ran the pool-level DISCARD ALL on the previous Sync.
+    Then session "one" should receive DataRow with "0"
     When we send SimpleQuery "SET statement_timeout = 10000" to session "one"
     And we send SimpleQuery "SELECT count(*) FROM pg_prepared_statements" to session "one" and store response
     Then session "one" should receive DataRow with "0"
@@ -153,18 +156,13 @@ Feature: Backend cleanup policy
 
     Examples:
       | mode     | mode_override                       | increment | query_override                                                                                                                                 | first_query                                                                                         | second_query                                       | intermediate | resets |
-      | adaptive | # inherit                           | 1         | # inherit                                                                                                                                      | SELECT pg_backend_pid()                                                                             | SELECT min(n) FROM public.cleanup_counter           | 0            | 0      |
-      | adaptive | # inherit                           | 1         | # inherit                                                                                                                                      | SET statement_timeout = 10000; SELECT pg_backend_pid()                                              | SELECT min(n) FROM public.cleanup_counter           | 1            | 1      |
-      | adaptive | # inherit                           | 1         | # inherit                                                                                                                                      | SET work_mem = '96MB'; RESET application_name; SELECT pg_backend_pid()                               | SELECT min(n) FROM public.cleanup_counter           | 1            | 1      |
-      | adaptive | # inherit                           | 1         | # inherit                                                                                                                                      | DISCARD ALL                             | SELECT min(n) FROM public.cleanup_counter           | 1            | 1      |
-      | adaptive | # inherit                           | 1         | # inherit                                                                                                                                      | BEGIN; INSERT INTO public.cleanup_counter VALUES (99); SELECT pg_backend_pid()                       | SELECT min(n) FROM public.cleanup_counter           | 0            | 0      |
       | always   | # inherit                           | 1         | # inherit                                                                                                                                      | SELECT pg_backend_pid()                                                                             | SELECT min(n) FROM public.cleanup_counter           | 1            | 2      |
       | always   | # inherit                           | 1         | # inherit                                                                                                                                      | SELECT 7                                                                             | SELECT min(n) FROM public.cleanup_counter           | 1            | 2      |
       | always   | # inherit                           | 1         | # inherit                                                                                                                                      | BEGIN; SELECT pg_backend_pid()                                                                      | SELECT min(n) FROM public.cleanup_counter; COMMIT   | 0            | 1      |
       | off      | # inherit                           | 1         | # inherit                                                                                                                                      | BEGIN; INSERT INTO public.cleanup_counter VALUES (99); SELECT pg_backend_pid()                       | SELECT min(n) FROM public.cleanup_counter           | 0            | 0      |
       | off      | cleanup_server_connections: always  | 1         | # inherit                                                                                                                                      | SELECT pg_backend_pid()                                                                             | SELECT min(n) FROM public.cleanup_counter           | 1            | 2      |
       | always   | cleanup_server_connections: off     | 1         | # inherit                                                                                                                                      | BEGIN; INSERT INTO public.cleanup_counter VALUES (99); SELECT pg_backend_pid()                       | SELECT min(n) FROM public.cleanup_counter           | 0            | 0      |
-      | always   | cleanup_server_connections: true     | 1         | # inherit                                                                                                                                      | SELECT pg_backend_pid()                       | SELECT min(n) FROM public.cleanup_counter           | 0            | 0      |
+      | always   | cleanup_server_connections: false   | 1         | # inherit                                                                                                                                      | BEGIN; INSERT INTO public.cleanup_counter VALUES (99); SELECT pg_backend_pid()                       | SELECT min(n) FROM public.cleanup_counter           | 0            | 0      |
       | always   | # inherit                           | 100       | cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"                                       | SELECT pg_backend_pid()                                                                             | SELECT min(n) FROM public.cleanup_counter           | 1            | 2      |
 
   @cleanup-async @cleanup-async-cache
@@ -182,7 +180,7 @@ Feature: Backend cleanup policy
         prepared_statements: true
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
         cleanup_server_connections: <mode>
-        cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"
+        <query_config>
       pools:
         example_db:
           server_host: "127.0.0.1"
@@ -234,10 +232,10 @@ Feature: Backend cleanup policy
     Then session "observer" should receive exactly one DataRow "<after_close_resets>"
 
     Examples:
-      | pool_mode   | mode     | resets | cached | total | after_close_resets | after_close_cached |
-      | transaction | adaptive | 0      | 1      | 0     | 0                  | 1                  |
-      | transaction | always   | 1      | 0      | 2     | 2                  | 0                  |
-      | session     | always   | 0      | 1      | 0     | 1                  | 0                  |
+      | pool_mode   | mode     | query_config                                                                                                                | resets | cached | total | after_close_resets | after_close_cached |
+      | transaction | adaptive | # inherit                                                                                                                     | 0      | 1      | 0     | 0                  | 1                  |
+      | transaction | always   | cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"                  | 1      | 0      | 2     | 2                  | 0                  |
+      | session     | always   | cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"                  | 0      | 1      | 0     | 1                  | 0                  |
 
   @cleanup-async @cleanup-async-set
   Scenario Outline: Extended SET remains visible until Sync releases the backend
@@ -254,7 +252,7 @@ Feature: Backend cleanup policy
         prepared_statements: true
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
         cleanup_server_connections: <mode>
-        cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"
+        <query_config>
       pools:
         example_db:
           server_host: "127.0.0.1"
@@ -291,10 +289,10 @@ Feature: Backend cleanup policy
     Then session "observer" should receive exactly one DataRow "<resets>"
 
     Examples:
-      | mode     | resets | timeout | cached |
-      | adaptive | 1      | 0       | 0      |
-      | always   | 1      | 0       | 0      |
-      | off      | 0      | 10s     | 2      |
+      | mode     | query_config                                                                                                   | resets | timeout | cached |
+      | adaptive | # inherit                                                                                                      | 0      | 0       | 2      |
+      | always   | cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"    | 1      | 0       | 0      |
+      | off      | # inherit                                                                                                      | 0      | 10s     | 2      |
 
   @cleanup-async @cleanup-async-transaction
   Scenario Outline: Sync inside a transaction defers always cleanup until transaction end
@@ -376,7 +374,7 @@ Feature: Backend cleanup policy
         prepared_statements: true
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
         cleanup_server_connections: <mode>
-        cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"
+        <query_config>
       pools:
         example_db:
           server_host: "127.0.0.1"
@@ -412,9 +410,9 @@ Feature: Backend cleanup policy
     Then session "observer" should receive exactly one DataRow "0"
 
     Examples:
-      | mode     | begin_query                    | status | finish_query |
-      | adaptive | SELECT pg_backend_pid()        | I      | SELECT 1     |
-      | always   | BEGIN; SELECT pg_backend_pid() | E      | ROLLBACK     |
+      | mode     | query_config                                                                                                   | begin_query                    | status | finish_query |
+      | adaptive | # inherit                                                                                                      | SELECT pg_backend_pid()        | I      | SELECT 1     |
+      | always   | cleanup_server_query: "RESET ALL; DEALLOCATE ALL; CLOSE ALL; UPDATE public.cleanup_counter SET n = n + 1"    | BEGIN; SELECT pg_backend_pid() | E      | ROLLBACK     |
 
   @cleanup-async @cleanup-async-disconnect
   Scenario: Disconnect after a drained Flush cleans the backend before reuse

@@ -54,6 +54,7 @@ Feature: Backend cleanup against a real Greengage coordinator and segments
         port: ${DOORMAN_PORT}
         admin_username: admin
         admin_password: admin
+        cleanup_server_connections: always
         cleanup_server_query: "SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; CLOSE ALL; UNLISTEN *; SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP"
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
       pools:
@@ -145,6 +146,7 @@ Feature: Backend cleanup against a real Greengage coordinator and segments
         port: ${DOORMAN_PORT}
         admin_username: admin
         admin_password: admin
+        cleanup_server_connections: always
         cleanup_server_query: "DISCARD ALL"
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
       pools:
@@ -185,6 +187,7 @@ Feature: Backend cleanup against a real Greengage coordinator and segments
         port: ${DOORMAN_PORT}
         admin_username: admin
         admin_password: admin
+        cleanup_server_connections: always
         cleanup_server_query: "DISCARD ALL"
         pg_hba: {content: "host all all 127.0.0.1/32 trust"}
       pools:

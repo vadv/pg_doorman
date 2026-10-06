@@ -37,6 +37,7 @@ Feature: Prepared statement cache desync on client disconnect before Sync
       server_host = "127.0.0.1"
       server_port = ${PG_PORT}
       pool_mode = "transaction"
+      <reset_mode>
       <reset_config>
 
       [[pools.example_db.users]]
@@ -58,9 +59,9 @@ Feature: Prepared statement cache desync on client disconnect before Sync
     Then session "two" should receive DataRow with "30"
 
     Examples:
-      | reset_config                      |
-      | # selective cleanup               |
-      | cleanup_server_query = "DISCARD ALL" |
+      | reset_mode                         | reset_config                         |
+      | # adaptive                         | # selective cleanup                |
+      | cleanup_server_connections = "always" | cleanup_server_query = "DISCARD ALL" |
 
   Scenario: TCP abort after Parse without Sync causes stale server cache
     Given pg_doorman started with config:
