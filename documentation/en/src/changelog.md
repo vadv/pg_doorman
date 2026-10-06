@@ -14,6 +14,35 @@ the part of the `clientId` after the `|` separator. For a `clientId` of
 Selection order: `clientId`, `srv-<clientId>`, `srv-<service-name>`
 (for `s2i|`-prefixed `clientId`), then the max token role. 
 
+#### Configurable backend cleanup: `cleanup_server_connections` modes and `cleanup_server_query`
+
+`cleanup_server_connections` now accepts `off`, `adaptive` or `always`, in `[general]` and per pool.
+Legacy `false` and `true` keep working and mean `off` and `adaptive`.
+
+- `adaptive` (default): built-in cleanup, sent only when pg_doorman saw the session state change.
+- `always`: `cleanup_server_query` runs on every checkin of a backend that served a client. The query
+  is required.
+- `off`: no session cleanup. ROLLBACK of an unfinished transaction still runs.
+
+`cleanup_server_query` replaces the built-in `RESET ROLE` / `RESET ALL` / `DEALLOCATE ALL` /
+`CLOSE ALL` sequence with your own SQL. A good example is `DISCARD ALL`, which is also PgBouncer's
+default `server_reset_query`. The two settings are validated as a pair for every pool, using the
+inherited value when the pool does not set its own: `always` without a query is an error, and a query
+with an effective `adaptive` mode is an error.
+
+```toml
+[general]
+cleanup_server_connections = "always"
+cleanup_server_query = "DISCARD ALL"
+```
+
+A failed cleanup retires the backend instead of returning it to the pool with unknown session state.
+In `always` the configured query runs on every checkin, so a client-side `RESET` or `DISCARD ALL` does
+not suppress it; in `adaptive` a client that cleaned up after itself still does.
+`pg_doorman_server_cleanup_total` counts cleanup attempts per pool with `result="ok"` or
+`result="error"`. Pool-level `cleanup_server_connections` became optional in the config dump, so
+`SHOW` and config dumps omit the field when the pool does not set it.
+
 ### 3.11.1
 
 #### Pool-level `sync_server_parameters` override
