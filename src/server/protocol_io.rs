@@ -430,8 +430,7 @@ enum CommandCompleteEffect {
     ArmSet,
     /// `DECLARE CURSOR` — a server-side cursor may now be open; arm declare-cleanup.
     ArmDeclare,
-    /// `RESET` / `RESET ALL` — disarm built-in SET cleanup, or custom SET cleanup
-    /// when pg_doorman itself is resetting the connection.
+    /// `RESET` / `RESET ALL` — disarm built-in SET cleanup.
     DisarmSet,
     /// `CLOSE CURSOR ALL` — no server-side cursors remain; disarm declare-cleanup.
     DisarmDeclare,
@@ -493,8 +492,8 @@ fn drop_prepared_statement_cache_on_reset(server: &mut Server, reason: &'static 
 
 /// Handles CommandComplete ('C') message - indicates successful completion of a command.
 /// Tracks commands that may require cleanup (SET, DECLARE, ...) and disarms the
-/// cleanup flags after DISCARD / DEALLOCATE / CLOSE ALL. Client RESET suppresses
-/// built-in SET cleanup, but does not replace a configured cleanup query.
+/// cleanup flags after DISCARD / DEALLOCATE / CLOSE ALL. Client RESET and DISCARD ALL
+/// suppress built-in cleanup; the `always` mode runs its configured query regardless.
 fn handle_command_complete(server: &mut Server, message: &BytesMut) {
     // Exit COPY mode if we were in it
     if server.in_copy_mode {
@@ -510,11 +509,7 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
             server.cleanup_state.needs_cleanup_declare = true;
         }
         CommandCompleteEffect::DisarmSet => {
-            // Preserve client reset-batch suppression for built-in cleanup.
-            // A configured cleanup query still has to run in full.
-            if !server.custom_cleanup_enabled() || server.resetting {
-                server.cleanup_state.needs_cleanup_set = false;
-            }
+            server.cleanup_state.needs_cleanup_set = false;
         }
         CommandCompleteEffect::DisarmDeclare => {
             server.cleanup_state.needs_cleanup_declare = false;
@@ -526,10 +521,11 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
         CommandCompleteEffect::DisarmAll => {
             server.cleanup_state.reset();
             drop_prepared_statement_cache_on_reset(server, "DISCARD ALL");
-            // A fork may complete DISCARD locally only, even with notices muted.
-            // Honour the configured cleanup while preserving native cache invalidation.
-            if server.custom_cleanup_enabled() && !server.resetting {
-                server.cleanup_state.needs_cleanup_set = true;
+            // DISCARD ALL resets every GUC, including startup parameters that never
+            // report ParameterStatus. Drop them from the snapshot so the next
+            // checkout re-applies its own values.
+            if !server.resetting {
+                server.server_parameters.forget_untracked();
             }
         }
     }

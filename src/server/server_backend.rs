@@ -472,10 +472,15 @@ impl Server {
             return Ok(());
         }
         if self.custom_cleanup_enabled() {
-            let needs_cleanup = self.cleanup_state.needs_cleanup()
+            // A configured query runs only in `always`, and there every backend
+            // that served a client is reset: what adaptive tracking observed does
+            // not matter. The other terms cover pg_doorman state left behind
+            // without client traffic, such as the prepared statement cache.
+            let needs_cleanup = (self.cleanup_connections == CleanupMode::Always
+                && self.used_since_cleanup)
+                || self.cleanup_state.needs_cleanup()
                 || self.has_pending_cache_entries
-                || !self.deferred_eviction_closes.is_empty()
-                || (self.cleanup_connections == CleanupMode::Always && self.used_since_cleanup);
+                || !self.deferred_eviction_closes.is_empty();
             let query = self
                 .cleanup_server_query
                 .as_ref()
@@ -575,6 +580,8 @@ impl Server {
         Ok(())
     }
 
+    /// Config validation pairs a query with `always` only, so a configured query
+    /// means the `always` mode.
     pub(crate) fn custom_cleanup_enabled(&self) -> bool {
         self.cleanup_connections != CleanupMode::Off && self.cleanup_server_query.is_some()
     }
