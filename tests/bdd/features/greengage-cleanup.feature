@@ -295,3 +295,37 @@ Feature: Backend cleanup against a real Greengage coordinator and segments
     When we send SimpleQuery "ROLLBACK" to session "one" and store response
     Then session "one" should receive CommandComplete "ROLLBACK"
     And session "one" should receive ReadyForQuery "I"
+
+  @greengage-cleanup-built-in-temp-tables
+  Scenario: Built-in DISCARD TEMP clears the temporary table on the coordinator and on the segments
+    Given pg_doorman started with config:
+      """
+      general:
+        host: "127.0.0.1"
+        port: ${DOORMAN_PORT}
+        admin_username: admin
+        admin_password: admin
+        pg_hba: {content: "host all all 127.0.0.1/32 trust"}
+      pools:
+        example_db:
+          server_host: "${GREENGAGE_HOST}"
+          server_port: ${GREENGAGE_PORT}
+          server_database: "${GREENGAGE_DATABASE}"
+          pool_mode: session
+          users: [{username: example_user_1, password: "", server_username: "${GREENGAGE_USER}", server_password: "${GREENGAGE_PASSWORD}", pool_size: 1}]
+      """
+    When we create session "first" to pg_doorman as "example_user_1" with password "" and database "example_db"
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "first" and store backend_pid
+    # One batch is one lease: the temp table must exist here. After the
+    # checkin the built-in cleanup drops it, which the next session verifies.
+    And we send SimpleQuery "CREATE TEMP TABLE built_in_temp (id integer) DISTRIBUTED BY (id); SELECT count(*) FROM gp_dist_random('pg_class') WHERE relname = 'built_in_temp'" to session "first" and store response
+    Then session "first" should receive exactly one DataRow "${GREENGAGE_SEGMENTS}"
+    When we close session "first"
+    And we create session "next" to pg_doorman as "example_user_1" with password "" and database "example_db"
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "next" and store backend_pid
+    Then backend_pid from session "next" should equal backend_pid from session "first"
+    When we send SimpleQuery "SELECT to_regclass('pg_temp.built_in_temp') IS NULL" to session "next" and store response
+    Then session "next" should receive exactly one DataRow "t"
+    And session "next" should receive only backend messages "TDCZ"
+    When we send SimpleQuery "SELECT count(*) FROM gp_dist_random('pg_class') WHERE relname = 'built_in_temp'" to session "next" and store response
+    Then session "next" should receive exactly one DataRow "0"

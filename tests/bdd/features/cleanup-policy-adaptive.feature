@@ -107,6 +107,12 @@ Feature: Built-in cleanup without cleanup_server_query
       | "adaptive" | BEGIN; DECLARE doorman_cur CURSOR WITH HOLD FOR SELECT 1; COMMIT | 0         | 1          | 0         | 1         |
       | "off"      | SELECT 1                                                         | 0         | 0          | 0         | 0         |
       | "adaptive" | SELECT 1                                                         | 0         | 0          | 0         | 0         |
+      | "off"      | LISTEN split_ch                                                  | 0         | 0          | 0         | 0         |
+      | "adaptive" | LISTEN split_ch                                                  | 0         | 1          | 0         | 0         |
+      | "off"      | PREPARE split_stmt AS SELECT 1                                   | 0         | 0          | 0         | 0         |
+      | "adaptive" | PREPARE split_stmt AS SELECT 1                                   | 0         | 1          | 0         | 0         |
+      | "off"      | CREATE TABLE split_perm (i int)                                  | 0         | 0          | 0         | 0         |
+      | "adaptive" | CREATE TABLE split_perm (i int)                                  | 0         | 1          | 0         | 0         |
 
   @cleanup-policy-adaptive-prepared-desync
   Scenario Outline: Mode <mode> re-synchronizes the prepared statement cache only in adaptive

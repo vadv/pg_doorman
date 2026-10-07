@@ -54,6 +54,25 @@ const COMMAND_COMPLETE_BY_DEALLOCATE_ALL: &[u8; 15] = b"DEALLOCATE ALL\0";
 /// `DISCARD ALL` CommandComplete tag — equivalent to `RESET ALL; DEALLOCATE ALL;
 /// CLOSE ALL; UNLISTEN *; ...`, so disarms every `needs_cleanup_*` flag.
 const COMMAND_COMPLETE_BY_DISCARD_ALL: &[u8; 12] = b"DISCARD ALL\0";
+/// `LISTEN` CommandComplete tag — arms the `needs_cleanup_listen` flag.
+/// `UNLISTEN` shares one tag for `UNLISTEN ch` and `UNLISTEN *`, so it cannot
+/// disarm: a partial unsubscribe leaves the remaining subscriptions behind.
+const COMMAND_COMPLETE_BY_LISTEN: &[u8; 7] = b"LISTEN\0";
+/// SQL `PREPARE` CommandComplete tag — arms `needs_cleanup_prepare`. The SQL
+/// command shares the server-side statement namespace with an extended-protocol
+/// `Parse`, which pg_doorman tracks separately through its cache bookkeeping.
+const COMMAND_COMPLETE_BY_PREPARE: &[u8; 8] = b"PREPARE\0";
+/// `CREATE TABLE` CommandComplete tag — arms the `needs_cleanup_temp` flag.
+/// The tag does not distinguish `CREATE TEMP TABLE` from a permanent
+/// `CREATE TABLE`; the false positive only costs one `DISCARD TEMP` in the
+/// already-sent cleanup batch.
+const COMMAND_COMPLETE_BY_CREATE_TABLE: &[u8; 13] = b"CREATE TABLE\0";
+/// Legacy `CREATE TABLE AS` / `SELECT INTO` tags — arm the `needs_cleanup_temp`
+/// flag for forks that still emit them. Current PostgreSQL answers these
+/// statements with the inner query's tag (`SELECT <rowcount>`), which is
+/// indistinguishable from a plain `SELECT` and stays untracked.
+const COMMAND_COMPLETE_BY_CREATE_TABLE_AS: &[u8; 16] = b"CREATE TABLE AS\0";
+const COMMAND_COMPLETE_BY_SELECT_INTO: &[u8; 12] = b"SELECT INTO\0";
 
 /// Buffer flush threshold in bytes (8 KiB).
 /// When the buffer reaches this size, it will be flushed to avoid excessive memory usage.
@@ -427,6 +446,15 @@ enum CommandCompleteEffect {
     ArmSet,
     /// `DECLARE CURSOR` — a server-side cursor may now be open; arm declare-cleanup.
     ArmDeclare,
+    /// `LISTEN` — a session subscription may now be registered; arm listen-cleanup.
+    ArmListen,
+    /// SQL `PREPARE` — a named statement now exists server-side; arm prepare-cleanup.
+    ArmPrepare,
+    /// `CREATE TABLE` (and the legacy `CREATE TABLE AS` / `SELECT INTO` tags of
+    /// older forks) — a temp table may now exist; arm temp-cleanup. The tags do
+    /// not distinguish temp from permanent objects; `DISCARD TEMP` is a no-op
+    /// for permanent ones.
+    ArmTemp,
     /// `RESET` / `RESET ALL` — disarm built-in SET cleanup.
     DisarmSet,
     /// `CLOSE CURSOR ALL` — no server-side cursors remain; disarm declare-cleanup.
@@ -448,6 +476,15 @@ enum CommandCompleteEffect {
 fn classify_command_complete(tag: &[u8]) -> CommandCompleteEffect {
     if tag == COMMAND_COMPLETE_BY_SET {
         CommandCompleteEffect::ArmSet
+    } else if tag == COMMAND_COMPLETE_BY_LISTEN {
+        CommandCompleteEffect::ArmListen
+    } else if tag == COMMAND_COMPLETE_BY_PREPARE {
+        CommandCompleteEffect::ArmPrepare
+    } else if tag == COMMAND_COMPLETE_BY_CREATE_TABLE
+        || tag == COMMAND_COMPLETE_BY_CREATE_TABLE_AS
+        || tag == COMMAND_COMPLETE_BY_SELECT_INTO
+    {
+        CommandCompleteEffect::ArmTemp
     } else if tag == COMMAND_COMPLETE_BY_RESET {
         CommandCompleteEffect::DisarmSet
     } else if tag == COMMAND_COMPLETE_BY_DECLARE {
@@ -488,9 +525,11 @@ fn drop_prepared_statement_cache_on_reset(server: &mut Server, reason: &'static 
 }
 
 /// Handles CommandComplete ('C') message - indicates successful completion of a command.
-/// Tracks commands that may require cleanup (SET, DECLARE, ...) and disarms the
-/// cleanup flags after DISCARD / DEALLOCATE / CLOSE ALL. Client RESET and DISCARD ALL
-/// suppress built-in cleanup; the `always` mode runs its configured query regardless.
+/// Tracks commands that may require cleanup (SET, DECLARE, LISTEN, SQL PREPARE,
+/// temp-creating DDL) and disarms the cleanup flags after DISCARD / DEALLOCATE /
+/// CLOSE ALL. Client RESET and DISCARD ALL suppress built-in cleanup; the `always`
+/// mode runs its configured query regardless. Client `UNLISTEN` and single-statement
+/// `DEALLOCATE`/`DROP` share their tag with the unconditional forms and never disarm.
 fn handle_command_complete(server: &mut Server, message: &BytesMut) {
     // Exit COPY mode if we were in it
     if server.in_copy_mode {
@@ -504,6 +543,15 @@ fn handle_command_complete(server: &mut Server, message: &BytesMut) {
         }
         CommandCompleteEffect::ArmDeclare => {
             server.cleanup_state.needs_cleanup_declare = true;
+        }
+        CommandCompleteEffect::ArmListen => {
+            server.cleanup_state.needs_cleanup_listen = true;
+        }
+        CommandCompleteEffect::ArmPrepare => {
+            server.cleanup_state.needs_cleanup_prepare = true;
+        }
+        CommandCompleteEffect::ArmTemp => {
+            server.cleanup_state.needs_cleanup_temp = true;
         }
         CommandCompleteEffect::DisarmSet => {
             server.cleanup_state.needs_cleanup_set = false;
@@ -959,11 +1007,117 @@ mod tests {
     }
 
     #[test]
+    fn listen_tag_arms_listen_cleanup() {
+        assert_eq!(
+            classify_command_complete(b"LISTEN\0"),
+            CommandCompleteEffect::ArmListen,
+        );
+    }
+
+    #[test]
+    fn unlisten_tag_is_inert() {
+        // One tag covers both `UNLISTEN ch` and `UNLISTEN *`. A partial
+        // unsubscribe proves nothing about the remaining subscriptions, so
+        // UNLISTEN never disarms; the checkin UNLISTEN * is an idempotent no-op.
+        assert_eq!(
+            classify_command_complete(b"UNLISTEN\0"),
+            CommandCompleteEffect::None,
+        );
+    }
+
+    #[test]
+    fn sql_prepare_tag_arms_prepare_cleanup() {
+        // SQL PREPARE installs a named statement in the same server-side
+        // namespace as an extended-protocol Parse; the checkin DEALLOCATE ALL
+        // releases it and the pooler's text-keyed cache re-prepares on demand.
+        assert_eq!(
+            classify_command_complete(b"PREPARE\0"),
+            CommandCompleteEffect::ArmPrepare,
+        );
+    }
+
+    #[test]
+    fn temp_creating_tags_arm_temp_cleanup() {
+        // None of these tags distinguish temp from permanent objects; arming
+        // is intentional and DISCARD TEMP is a no-op for permanent ones.
+        // Current PostgreSQL answers CREATE TABLE AS / SELECT INTO with the
+        // inner query's tag, so these two only fire on older forks.
+        for tag in [
+            &b"CREATE TABLE\0"[..],
+            b"CREATE TABLE AS\0",
+            b"SELECT INTO\0",
+        ] {
+            assert_eq!(
+                classify_command_complete(tag),
+                CommandCompleteEffect::ArmTemp,
+                "tag {:?} should arm temp cleanup",
+                std::str::from_utf8(tag).unwrap_or("<non-utf8>"),
+            );
+        }
+    }
+
+    #[test]
+    fn select_into_inner_select_tag_is_inert() {
+        // `SELECT ... INTO TEMP` / `CREATE TEMP TABLE AS SELECT` on current
+        // PostgreSQL complete with the inner query's tag, same as a plain
+        // SELECT. Tracking it would fire on every read query, so these
+        // statements are documented as not detectable.
+        for tag in [&b"SELECT 1\0"[..], b"SELECT 42\0"] {
+            assert_eq!(
+                classify_command_complete(tag),
+                CommandCompleteEffect::None,
+                "tag {:?} should not influence cleanup",
+                std::str::from_utf8(tag).unwrap_or("<non-utf8>"),
+            );
+        }
+    }
+
+    #[test]
+    fn untracked_ddl_tags_are_inert() {
+        // A permanent DROP is not proof that every temp object is gone, and a
+        // temp sequence (CREATE SEQUENCE) carries no distinguishable tag.
+        for tag in [
+            &b"DROP TABLE\0"[..],
+            b"DROP TABLE 3\0",
+            b"CREATE SEQUENCE\0",
+            b"CREATE INDEX\0",
+            b"NOTIFY\0",
+        ] {
+            assert_eq!(
+                classify_command_complete(tag),
+                CommandCompleteEffect::None,
+                "tag {:?} should not influence cleanup",
+                std::str::from_utf8(tag).unwrap_or("<non-utf8>"),
+            );
+        }
+    }
+
+    #[test]
+    fn create_table_prefix_does_not_confuse_classifier() {
+        // CREATE TABLE AS shares its prefix with CREATE TABLE; the comparison
+        // is full-length, so each tag must classify independently.
+        assert_eq!(
+            classify_command_complete(b"CREATE TABLE\0"),
+            CommandCompleteEffect::ArmTemp,
+        );
+        assert_eq!(
+            classify_command_complete(b"CREATE TABLE AS\0"),
+            CommandCompleteEffect::ArmTemp,
+        );
+        // Same prefix with an unrelated tail — inert.
+        assert_eq!(
+            classify_command_complete(b"CREATE TABLESPACE\0"),
+            CommandCompleteEffect::None,
+        );
+    }
+
+    #[test]
     fn partial_discard_tags_are_inert() {
         // DISCARD PLANS drops the plan cache, DISCARD TEMP drops temp tables,
         // DISCARD SEQUENCES resets sequence caches. None of them revert SET
-        // state or drop prepared statements, so none should influence the
-        // cleanup flags on their own.
+        // state or drop prepared statements. A client DISCARD TEMP also does
+        // not disarm temp-cleanup: the redundant checkin DISCARD TEMP is an
+        // idempotent no-op.
         assert_eq!(
             classify_command_complete(b"DISCARD PLANS\0"),
             CommandCompleteEffect::None,

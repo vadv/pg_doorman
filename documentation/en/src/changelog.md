@@ -14,9 +14,8 @@ Legacy `false` and `true` keep working and mean `off` and `adaptive`.
 
 `cleanup_server_query` replaces the built-in `RESET ROLE` / `RESET ALL` / `DEALLOCATE ALL` /
 `CLOSE ALL` sequence with your own SQL. A good example is PgBouncer's default `server_reset_query`,
-`DISCARD ALL`. The two settings are validated as a pair for every pool, using the inherited value when
-the pool does not set its own: `always` without a query is an error, and a query with an effective
-`adaptive` mode is an error.
+`DISCARD ALL`. Validation checks the pair as a whole, with inherited values where a pool sets nothing.
+`always` without a query is an error. A query with an effective `adaptive` mode is an error.
 
 ```toml
 [general]
@@ -25,11 +24,25 @@ cleanup_server_query = "DISCARD ALL"
 ```
 
 A failed cleanup retires the backend instead of returning it to the pool with unknown session state.
-In `always` the configured query runs on every checkin, so a client-side `RESET` or `DISCARD ALL` does
-not suppress it; in `adaptive` a client that cleaned up after itself still does.
+In `always` the configured query runs on every checkin. A client-side `RESET` or `DISCARD ALL` does not
+suppress it. In `adaptive` such a client reset suppresses the built-in cleanup.
 `pg_doorman_server_cleanup_total` counts cleanup attempts per pool with `result="ok"` or
 `result="error"`. Pool-level `cleanup_server_connections` became optional in the config dump, so
 `SHOW` and config dumps omit the field when the pool does not set it.
+
+Adaptive detection covers more session state:
+
+- SQL `PREPARE` → `DEALLOCATE ALL` at checkin. SQL `PREPARE` and an extended-protocol `Parse` share one
+  server-side statement namespace; previously the next client on the same backend could fail with
+  `42P05 duplicate_prepared_statement`.
+- `LISTEN` → `UNLISTEN *` at checkin. A pooled backend's socket is not read, so queued notifications
+  were delivered to whichever client checked the backend out next.
+- `CREATE TEMP TABLE` → `DISCARD TEMP` at checkin. `SELECT ... INTO TEMP` and `CREATE TEMP TABLE AS SELECT`
+  complete with the inner query's tag and stay untracked. In transaction mode the backend returns to the pool
+  after every query. A temp table no longer survives the same client's next query; keep a transaction open or
+  use session mode to keep it longer.
+- Every cleanup batch releases advisory locks with `pg_advisory_unlock_all()`. Previously a session-level
+  advisory lock outlived the client that took it.
 
 ### 3.11.2
 

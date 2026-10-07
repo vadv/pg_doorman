@@ -1425,9 +1425,9 @@ fields:
         `server_reset_query`. In PostgreSQL it is one command equivalent to `CLOSE ALL;
         SET SESSION AUTHORIZATION DEFAULT; RESET ALL; DEALLOCATE ALL; UNLISTEN *;
         SELECT pg_advisory_unlock_all(); DISCARD PLANS; DISCARD SEQUENCES; DISCARD TEMP`, so it is broader
-        than the built-in cleanup: it adds `UNLISTEN`, advisory locks, temporary tables, plans and sequence
-        state.
-        Example for Greengage 7, where `DISCARD ALL` leaves temporary tables on segments:
+        than the built-in cleanup: it adds `SET SESSION AUTHORIZATION DEFAULT`, `DISCARD PLANS` and
+        `DISCARD SEQUENCES`. On Greengage `DISCARD ALL` has a quirk: it releases the temporary table
+        on the coordinator and leaves it on the segments. Example query for Greengage 7:
 
         ```sql
         CLOSE ALL;
@@ -1465,18 +1465,38 @@ fields:
           required.
         - `off`: no session cleanup. ROLLBACK of an unfinished transaction still runs.
 
-        Built-in cleanup sends `RESET ROLE` and, when needed, `RESET ALL`, `DEALLOCATE ALL` and `CLOSE ALL`. A client
-        that already sent `RESET ALL`, such as pgx, is not followed by another `RESET ALL`.
+        Built-in cleanup sends `RESET ROLE` and, when needed, `RESET ALL`, `DEALLOCATE ALL`, `CLOSE ALL`,
+        `UNLISTEN *` and `DISCARD TEMP`. A client that already sent `RESET ALL`, such as pgx, is not followed
+        by another `RESET ALL`. Every cleanup batch also releases advisory locks with
+        `pg_advisory_unlock_all()`. If the server lacks this function, the batch fails and the backend is
+        retired.
 
-        Limitations of `adaptive`:
+        Tracked statements and the matching cleanup:
 
-        - Tracked: `SET`, `DECLARE` cursors, and a prepared statement cache that no longer matches the server.
-          Not tracked: SQL `PREPARE`, temporary tables, `LISTEN`, advisory locks and function side effects —
-          `CREATE TEMP TABLE` answers with the `CREATE TABLE AS` tag and `SELECT ... INTO` with the `SELECT INTO`
-          tag, and neither arms cleanup. Use `always` with SQL that releases these resources.
-        - `RESET` of a single parameter and `RESET ALL` return the same tag, so a client that resets one parameter
-          suppresses the following `RESET ALL`, and other changed parameters may stay set.
-        - In `always`, client `RESET` and `DISCARD ALL` do not replace the configured query.
+        - `SET` → `RESET ALL`.
+        - `DECLARE` cursors → `CLOSE ALL`.
+        - SQL `PREPARE` and a prepared statement cache that no longer matches the server → `DEALLOCATE ALL`.
+          SQL `PREPARE` shares the server-side statement namespace with an extended-protocol `Parse`.
+        - `LISTEN` → `UNLISTEN *`. A client `UNLISTEN` does not suppress it: the command tag is shared by
+          `UNLISTEN ch` and `UNLISTEN *`, so a partial unsubscribe does not prove that no subscription remains.
+        - `CREATE TEMP TABLE` → `DISCARD TEMP`. The `CREATE TABLE` tag does not distinguish temp from permanent
+          tables, so a permanent `CREATE TABLE` arms `DISCARD TEMP` too; for permanent objects it is a no-op.
+          On Greengage `DISCARD TEMP` removes temporary tables from the coordinator and from the segments.
+          In transaction mode the backend returns to the pool after every query. A temporary table lives for one
+          transaction; keep a transaction open across the statements that use it, or use session mode.
+
+        Not tracked by `adaptive`:
+
+        - `SELECT ... INTO TEMP` and `CREATE TEMP TABLE AS SELECT`: current PostgreSQL completes them with the
+          inner query's tag, indistinguishable from a plain `SELECT`. On forks that still report the dedicated
+          tags, the cleanup arms. Temporary tables and sequences created inside functions carry no tag at all.
+        - Advisory locks: they carry no command tag, so a lock taken by a single statement does not arm cleanup.
+          When a batch runs for another reason, `pg_advisory_unlock_all()` releases them.
+
+        Use `always` with SQL that releases the untracked resources. `RESET` of a single parameter and `RESET ALL`
+        return the same tag, so a client that resets one parameter suppresses the following `RESET ALL`, and other
+        changed parameters may stay set. In `always`, client `RESET` and `DISCARD ALL` do not replace the
+        configured query.
 
         Mode and query are inherited from `general` separately and validated together: `always` requires a query,
         `adaptive` does not accept one. Legacy `true` and `false` mean `adaptive` and `off`.

@@ -559,6 +559,20 @@ impl Server {
                 reset_string.push_str("CLOSE ALL;");
             };
 
+            if self.cleanup_state.needs_cleanup_listen {
+                reset_string.push_str("UNLISTEN *;");
+            };
+
+            // Advisory locks carry no command tag to track; release them in the
+            // same round trip whenever the cleanup batch is sent anyway. The
+            // ROLLBACK above releases transaction-level locks only, so a
+            // session-level advisory lock would otherwise outlive the client.
+            reset_string.push_str("SELECT pg_advisory_unlock_all();");
+
+            if self.cleanup_state.needs_cleanup_temp {
+                reset_string.push_str("DISCARD TEMP;");
+            };
+
             self.small_simple_query(&reset_string).await?;
             if reset_all {
                 self.server_parameters.forget_untracked();

@@ -54,13 +54,25 @@ Useful when one user (operations tooling, migrations) needs session semantics bu
 
 ## Cleanup on checkin
 
-The default is `cleanup_server_connections: adaptive` without `cleanup_server_query`: pg_doorman cleans a session only when it sees the session state change, so prepared statements survive a checkin. This suits PostgreSQL OLTP workloads.
+The default is `cleanup_server_connections: adaptive` without `cleanup_server_query`: pg_doorman cleans a session only when it sees the session state change, so the pooler's cached prepared statements survive a checkin.
 
-`cleanup_server_query` replaces the built-in cleanup and requires `always`: your SQL runs on every checkin of a backend that served a client. It is incompatible with `adaptive`, and validation rejects that pairing. The mode costs the server one extra query per checkin. pg_doorman re-prepares its own cached prepared statements, but it does not track client-side `PREPARE name` and `EXECUTE name`, so a query that releases them makes the next `EXECUTE` fail. `off` disables session cleanup. Open transactions are rolled back in every mode.
+The built-in cleanup tracks five kinds of session state and answers with cleanup SQL:
 
-`adaptive` does not guarantee a fully clean session: temporary objects, `LISTEN` subscriptions and advisory locks are released only by `always` with suitable SQL.
+- `SET` → `RESET ALL`.
+- `DECLARE` cursor → `CLOSE ALL`.
+- SQL `PREPARE` → `DEALLOCATE ALL`. SQL `PREPARE` and an extended-protocol `Parse` share one statement namespace.
+- `LISTEN` → `UNLISTEN *`.
+- `CREATE TEMP TABLE` → `DISCARD TEMP`.
 
-See the [pool reference](../reference/pool.md#cleanup_server_connections) for settings, limitations, and PostgreSQL and Greengage examples.
+Every cleanup batch also releases advisory locks with `pg_advisory_unlock_all()`.
+
+Not tracked: `SELECT ... INTO TEMP` and `CREATE TEMP TABLE AS SELECT` — they complete with the inner query's tag. Temporary objects created inside functions carry no tag. Use `always` with suitable SQL to release these.
+
+In transaction pooling the backend returns to the pool after every query. A temporary table lives for one transaction; keep a transaction open across the statements that use it.
+
+`cleanup_server_query` replaces the built-in cleanup and requires `always`: your SQL runs on every checkin of a backend that served a client. It is incompatible with `adaptive`, and validation rejects that pairing. The mode costs the server one extra query per checkin. `off` disables session cleanup. Open transactions are rolled back in every mode.
+
+See the [pool reference](../reference/pool.md#cleanup_server_connections) for the full list of tracked statements, limitations, and PostgreSQL and Greengage examples.
 
 ## Reference
 
