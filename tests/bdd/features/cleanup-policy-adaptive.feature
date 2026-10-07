@@ -94,25 +94,28 @@ Feature: Built-in cleanup without cleanup_server_query
     And PostgreSQL log should contain exactly <reset_role> occurrences of "RESET ROLE"
     And PostgreSQL log should contain exactly <reset_all> occurrences of "RESET ALL"
     And PostgreSQL log should contain exactly <close_all> occurrences of "CLOSE ALL"
+    # DEALLOCATE ALL belongs to the PREPARE flag alone: cursors and SET must
+    # not drag the pooler-side prepared statement cache down with them.
+    And PostgreSQL log should contain exactly <deallocates> occurrences of "DEALLOCATE ALL"
 
     Examples:
-      | mode       | client_query                                                     | rollbacks | reset_role | reset_all | close_all |
-      | "off"      | BEGIN; SET statement_timeout = 10000                             | 1         | 0          | 0         | 0         |
-      | "adaptive" | BEGIN; SET statement_timeout = 10000                             | 1         | 1          | 1         | 0         |
-      | "off"      | BEGIN; DECLARE doorman_cur CURSOR FOR SELECT 1                   | 1         | 0          | 0         | 0         |
-      | "adaptive" | BEGIN; DECLARE doorman_cur CURSOR FOR SELECT 1                   | 1         | 1          | 0         | 1         |
-      | "off"      | SET statement_timeout = 10000                                    | 0         | 0          | 0         | 0         |
-      | "adaptive" | SET statement_timeout = 10000                                    | 0         | 1          | 1         | 0         |
-      | "off"      | BEGIN; DECLARE doorman_cur CURSOR WITH HOLD FOR SELECT 1; COMMIT | 0         | 0          | 0         | 0         |
-      | "adaptive" | BEGIN; DECLARE doorman_cur CURSOR WITH HOLD FOR SELECT 1; COMMIT | 0         | 1          | 0         | 1         |
-      | "off"      | SELECT 1                                                         | 0         | 0          | 0         | 0         |
-      | "adaptive" | SELECT 1                                                         | 0         | 0          | 0         | 0         |
-      | "off"      | LISTEN split_ch                                                  | 0         | 0          | 0         | 0         |
-      | "adaptive" | LISTEN split_ch                                                  | 0         | 1          | 0         | 0         |
-      | "off"      | PREPARE split_stmt AS SELECT 1                                   | 0         | 0          | 0         | 0         |
-      | "adaptive" | PREPARE split_stmt AS SELECT 1                                   | 0         | 1          | 0         | 0         |
-      | "off"      | CREATE TABLE split_perm (i int)                                  | 0         | 0          | 0         | 0         |
-      | "adaptive" | CREATE TABLE split_perm (i int)                                  | 0         | 1          | 0         | 0         |
+      | mode       | client_query                                                     | rollbacks | reset_role | reset_all | close_all | deallocates |
+      | "off"      | BEGIN; SET statement_timeout = 10000                             | 1         | 0          | 0         | 0         | 0           |
+      | "adaptive" | BEGIN; SET statement_timeout = 10000                             | 1         | 1          | 1         | 0         | 0           |
+      | "off"      | BEGIN; DECLARE doorman_cur CURSOR FOR SELECT 1                   | 1         | 0          | 0         | 0         | 0           |
+      | "adaptive" | BEGIN; DECLARE doorman_cur CURSOR FOR SELECT 1                   | 1         | 1          | 0         | 1         | 0           |
+      | "off"      | SET statement_timeout = 10000                                    | 0         | 0          | 0         | 0         | 0           |
+      | "adaptive" | SET statement_timeout = 10000                                    | 0         | 1          | 1         | 0         | 0           |
+      | "off"      | BEGIN; DECLARE doorman_cur CURSOR WITH HOLD FOR SELECT 1; COMMIT | 0         | 0          | 0         | 0         | 0           |
+      | "adaptive" | BEGIN; DECLARE doorman_cur CURSOR WITH HOLD FOR SELECT 1; COMMIT | 0         | 1          | 0         | 1         | 0           |
+      | "off"      | SELECT 1                                                         | 0         | 0          | 0         | 0         | 0           |
+      | "adaptive" | SELECT 1                                                         | 0         | 0          | 0         | 0         | 0           |
+      | "off"      | LISTEN split_ch                                                  | 0         | 0          | 0         | 0         | 0           |
+      | "adaptive" | LISTEN split_ch                                                  | 0         | 1          | 0         | 0         | 0           |
+      | "off"      | PREPARE split_stmt AS SELECT 1                                   | 0         | 0          | 0         | 0         | 0           |
+      | "adaptive" | PREPARE split_stmt AS SELECT 1                                   | 0         | 1          | 0         | 0         | 1           |
+      | "off"      | CREATE TABLE split_perm (i int)                                  | 0         | 0          | 0         | 0         | 0           |
+      | "adaptive" | CREATE TABLE split_perm (i int)                                  | 0         | 1          | 0         | 0         | 0           |
 
   @cleanup-policy-adaptive-prepared-desync
   Scenario Outline: Mode <mode> re-synchronizes the prepared statement cache only in adaptive
