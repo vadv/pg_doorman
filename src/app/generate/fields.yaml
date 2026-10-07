@@ -1443,6 +1443,10 @@ fields:
 
         `DISCARD TEMP` removes temporary tables from the coordinator and from the segments. Without it, temporary
         objects and sequence state stay in the session.
+
+        The cost for prepared statements. `DISCARD ALL` also removes prepared statements. In transaction
+        pooling, a statement is re-parsed by every transaction that uses it. In session pooling, statements
+        are reused inside one client connection. If the workload relies on prepared statements, use `adaptive`.
       default: "None (uses global setting)"
 
     cleanup_server_connections:

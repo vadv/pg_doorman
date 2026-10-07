@@ -26,6 +26,8 @@ cleanup_server_query = "DISCARD ALL"
 A failed cleanup retires the backend instead of returning it to the pool with unknown session state.
 In `always` the configured query runs on every checkin. A client-side `RESET` or `DISCARD ALL` does not
 suppress it. In `adaptive` such a client reset suppresses the built-in cleanup.
+A cleanup query like `DISCARD ALL` also removes prepared statements: they are re-parsed after every
+checkin. Workloads that rely on prepared statements should stay in `adaptive`.
 `pg_doorman_server_cleanup_total` counts cleanup attempts per pool with `result="ok"` or
 `result="error"`. Pool-level `cleanup_server_connections` became optional in the config dump, so
 `SHOW` and config dumps omit the field when the pool does not set it.

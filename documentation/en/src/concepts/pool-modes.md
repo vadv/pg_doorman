@@ -70,7 +70,7 @@ Not tracked: `SELECT ... INTO TEMP` and `CREATE TEMP TABLE AS SELECT` — they c
 
 In transaction pooling the backend returns to the pool after every query. A temporary table lives for one transaction; keep a transaction open across the statements that use it.
 
-`cleanup_server_query` replaces the built-in cleanup and requires `always`: your SQL runs on every checkin of a backend that served a client. It is incompatible with `adaptive`, and validation rejects that pairing. The mode costs the server one extra query per checkin. `off` disables session cleanup. Open transactions are rolled back in every mode.
+`cleanup_server_query` replaces the built-in cleanup and requires `always`: your SQL runs on every checkin of a backend that served a client. It is incompatible with `adaptive`, and validation rejects that pairing. The mode costs the server one extra query per checkin. With `DISCARD ALL`, prepared statements are also removed and re-parsed after every checkin. `off` disables session cleanup. Open transactions are rolled back in every mode.
 
 See the [pool reference](../reference/pool.md#cleanup_server_connections) for the full list of tracked statements, limitations, and PostgreSQL and Greengage examples.
 
