@@ -197,3 +197,62 @@ Feature: Adaptive cleanup removes temporary tables left by a client
     Then backend_pid from session "next" should equal backend_pid from session "old"
     And we send SimpleQuery "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'" to session "next" and store response
     Then session "next" should receive DataRow with "0"
+
+  @cleanup-temp-tables-advisory-lone
+  Scenario: A lone advisory lock survives the checkin
+    # The lock has no command tag: it does not arm the cleanup batch, and no
+    # other statement arms it either. No batch runs, and the lock reaches the
+    # next client on the same backend. This is the documented hole in
+    # "Not tracked": release such locks in the application, or use `always`.
+    Given pg_doorman started with config:
+      """
+      general:
+        host: "127.0.0.1"
+        port: ${DOORMAN_PORT}
+        admin_username: admin
+        admin_password: admin
+        connect_timeout: 1000
+        pg_hba: {content: "host all all 127.0.0.1/32 trust"}
+      web:
+        enabled: true
+        host: "127.0.0.1"
+        port: 9129
+      pools:
+        example_db:
+          server_host: "127.0.0.1"
+          server_port: ${PG_PORT}
+          pool_mode: transaction
+          users: [{username: example_user_1, password: "", pool_size: 1}]
+      """
+    When we create session "old" to pg_doorman as "example_user_1" with password "" and database "example_db"
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "old" and store backend_pid
+    # pg_advisory_lock answers with the plain SELECT tag: nothing is armed.
+    And we send SimpleQuery "SELECT pg_advisory_lock(10, 20)" to session "old"
+    And we send SimpleQuery "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 10 AND objid = 20" to session "old" and store response
+    Then session "old" should receive DataRow with "1"
+    When we close session "old"
+    And we create session "next" to pg_doorman as "example_user_1" with password "" and database "example_db"
+    And we send SimpleQuery "SELECT pg_backend_pid()" to session "next" and store backend_pid
+    Then backend_pid from session "next" should equal backend_pid from session "old"
+    # The lock outlived the client that took it.
+    And we send SimpleQuery "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 10 AND objid = 20" to session "next" and store response
+    Then session "next" should receive DataRow with "1"
+    # No cleanup batch ran: both counters stayed at zero.
+    When I run shell command:
+      """
+      python3 - <<'PY'
+      import time
+      import urllib.request
+      deadline = time.monotonic() + 5
+      while True:
+          body = urllib.request.urlopen('http://127.0.0.1:9129/metrics', timeout=2).read().decode()
+          lines = body.splitlines()
+          ok = 'pg_doorman_server_cleanup_total{database="example_db",result="ok",user="example_user_1"} 0' in lines
+          err = 'pg_doorman_server_cleanup_total{database="example_db",result="error",user="example_user_1"} 0' in lines
+          if ok and err:
+              break
+          assert time.monotonic() < deadline, body
+          time.sleep(0.05)
+      PY
+      """
+    Then the command should succeed
