@@ -494,11 +494,10 @@ mod tests {
 
     #[test]
     fn good_parse_client_first_message() {
-        let result = parse_client_first_message(Cow::from(
-            "SCRAM-SHA-256\0\0\0\0 n,,n=,r=5DAkMQDUZpG/3GcwewTYJZbD",
-        ))
-        .unwrap();
-        assert_eq!("n=,r=5DAkMQDUZpG/3GcwewTYJZbD", result.client_first_bare);
+        let result =
+            parse_client_first_message(Cow::Borrowed("n,,n=,r=5DAkMQDUZpG/3GcwewTYJZbD")).unwrap();
+
+        assert_eq!(result.client_first_bare, "n=,r=5DAkMQDUZpG/3GcwewTYJZbD");
     }
 
     #[test]
